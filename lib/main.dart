@@ -3,6 +3,7 @@ import 'dart:isolate';
 import 'dart:math' as math;
 
 import 'package:crypto/crypto.dart';
+import 'package:file_picker/file_picker.dart' hide AndroidOptions;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -402,12 +403,14 @@ class CoinlyHome extends StatefulWidget {
 }
 
 class _CoinlyHomeState extends State<CoinlyHome> {
+  static const _maxBackupBytes = 1024 * 1024;
   int _tab = 0;
   late List<MoneyTransaction> _transactions;
   late double _balance;
   late List<BudgetAccount> _accounts;
   late List<FinanceCategory> _categories;
   late List<CardDetails> _cards;
+  late List<SavingsGoal> _goals;
 
   @override
   void initState() {
@@ -417,6 +420,7 @@ class _CoinlyHomeState extends State<CoinlyHome> {
     _balance = data.balance;
     _accounts = data.accounts;
     _categories = data.categories;
+    _goals = data.goals;
     _cards = widget.initialCards ?? AppData.defaultCards();
     if (widget.initialData == null || widget.initialCards == null) _persist();
   }
@@ -427,6 +431,7 @@ class _CoinlyHomeState extends State<CoinlyHome> {
       balance: _balance,
       accounts: _accounts,
       categories: _categories,
+      goals: _goals,
     );
     await Future.wait([
       widget.storage.saveData(data),
@@ -568,6 +573,35 @@ class _CoinlyHomeState extends State<CoinlyHome> {
     _persist();
   }
 
+  Future<void> _addGoal() async {
+    final goal = await showModalBottomSheet<SavingsGoal>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => const SavingsGoalSheet(),
+    );
+    if (goal == null) return;
+    setState(() => _goals.add(goal));
+    await _persist();
+  }
+
+  Future<void> _editGoal(SavingsGoal goal) async {
+    final updated = await showModalBottomSheet<SavingsGoal>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => SavingsGoalSheet(goal: goal),
+    );
+    if (updated == null) return;
+    setState(() {
+      goal.name = updated.name;
+      goal.target = updated.target;
+      goal.saved = updated.saved;
+      goal.color = updated.color;
+    });
+    await _persist();
+  }
+
   @override
   Widget build(BuildContext context) {
     final pages = [
@@ -575,7 +609,10 @@ class _CoinlyHomeState extends State<CoinlyHome> {
         balance: _balance,
         transactions: _transactions,
         accounts: _accounts,
+        goals: _goals,
         onAdd: _addTransaction,
+        onAddGoal: _addGoal,
+        onEditGoal: _editGoal,
         onShowAll: () => setState(() => _tab = 1),
         onShowAccounts: () => setState(() => _tab = 2),
         onSettings: _openSettings,
@@ -591,7 +628,7 @@ class _CoinlyHomeState extends State<CoinlyHome> {
           onDeleteCard: _deleteCard,
           onCopyCardNumber: _copyCardNumber),
       CategoriesPage(categories: _categories, onChanged: _persist),
-      const AnalyticsPage(),
+      AnalyticsPage(transactions: _transactions),
     ];
     return Scaffold(
       body: SafeArea(
@@ -629,9 +666,171 @@ class _CoinlyHomeState extends State<CoinlyHome> {
         onRemovePin: widget.onRemovePin,
         onEnableBiometrics: widget.onEnableBiometrics,
         onSetBiometricsEnabled: widget.onSetBiometricsEnabled,
+        onExportData: _exportData,
+        onImportData: _importData,
       ),
     ));
     if (mounted) setState(() {});
+  }
+
+  AppData _dataSnapshot() => AppData(
+        transactions: _transactions,
+        balance: _balance,
+        accounts: _accounts,
+        categories: _categories,
+        goals: _goals,
+      );
+
+  Future<void> _exportData() async {
+    try {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Экспортировать данные?'),
+          content: const Text(
+            'Резервная копия не зашифрована: не отправляйте её другим людям и не сохраняйте в публичном облаке. PIN и реквизиты карт в файл не входят.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Отмена'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Продолжить'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+      final now = DateTime.now();
+      final fileName =
+          'coinly-backup-${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}.json';
+      final bytes = Uint8List.fromList(utf8.encode(jsonEncode({
+        'format': 'coinly_backup',
+        'version': 1,
+        'createdAt': now.toIso8601String(),
+        'data': _dataSnapshot().toJson(),
+      })));
+      final target = await FilePicker.saveFile(
+        dialogTitle: 'Куда сохранить резервную копию?',
+        fileName: fileName,
+        bytes: bytes,
+        mimeType: 'application/json',
+        allowedExtensions: const ['json'],
+      );
+      if (target != null && mounted) {
+        _showNotice(context, 'Резервная копия сохранена');
+      }
+    } catch (_) {
+      if (mounted) _showNotice(context, 'Не удалось экспортировать данные');
+    }
+  }
+
+  Future<void> _importData() async {
+    try {
+      final file = await FilePicker.pickFile(
+        dialogTitle: 'Выберите резервную копию Coinly',
+        type: FileType.custom,
+        allowedExtensions: const ['json'],
+      );
+      if (file == null) return;
+      final bytes = await _readBackupBytes(file);
+      final decoded = jsonDecode(utf8.decode(bytes));
+      if (decoded is! Map ||
+          decoded['format'] != 'coinly_backup' ||
+          decoded['version'] != 1 ||
+          decoded['data'] is! Map) {
+        throw const FormatException('Invalid Coinly backup');
+      }
+      final dataJson = Map<String, dynamic>.from(decoded['data'] as Map);
+      if (!_isValidBackupData(dataJson)) {
+        throw const FormatException('Invalid Coinly backup data');
+      }
+      final imported = AppData.fromJson(dataJson);
+      if (!mounted) return;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Импортировать данные?'),
+          content: const Text(
+            'Текущие операции, счета, категории и цели будут заменены. Реквизиты карт и PIN не изменятся.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Отмена'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Импортировать'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+      setState(() {
+        _transactions = imported.transactions;
+        _balance = imported.balance;
+        _accounts = imported.accounts;
+        _categories = imported.categories;
+        _goals = imported.goals;
+      });
+      await _persist();
+      if (mounted) _showNotice(context, 'Данные импортированы');
+    } on FormatException catch (error) {
+      if (mounted) {
+        _showNotice(
+          context,
+          error.message == 'Backup is too large'
+              ? 'Файл слишком большой'
+              : 'Это не резервная копия Coinly',
+        );
+      }
+    } catch (_) {
+      if (mounted) _showNotice(context, 'Не удалось прочитать файл');
+    }
+  }
+
+  bool _isValidBackupData(Map<String, dynamic> json) =>
+      _isSafeNumber(json['balance']) &&
+      _isSafeList(json['transactions'], maxItems: 5000) &&
+      _isSafeList(json['accounts'], maxItems: 500) &&
+      _isSafeList(json['categories'], maxItems: 500) &&
+      _isSafeList(json['goals'], maxItems: 500);
+
+  bool _isSafeNumber(Object? value) =>
+      value is num && value.isFinite && value.abs() <= 1000000000000;
+
+  bool _isSafeList(Object? value, {required int maxItems}) =>
+      value is List &&
+      value.length <= maxItems &&
+      value.every((entry) {
+        if (entry is! Map) return false;
+        return entry.values.every((value) =>
+            value == null ||
+            value is bool ||
+            (value is String && value.length <= 160) ||
+            _isSafeNumber(value));
+      });
+
+  Future<Uint8List> _readBackupBytes(PlatformFile file) async {
+    final chunks = <Uint8List>[];
+    var length = 0;
+    await for (final chunk in file.readAsByteStream()) {
+      length += chunk.length;
+      if (length > _maxBackupBytes) {
+        throw const FormatException('Backup is too large');
+      }
+      chunks.add(chunk);
+    }
+    final result = Uint8List(length);
+    var offset = 0;
+    for (final chunk in chunks) {
+      result.setRange(offset, offset + chunk.length, chunk);
+      offset += chunk.length;
+    }
+    return result;
   }
 }
 
@@ -645,6 +844,8 @@ class SettingsPage extends StatefulWidget {
     required this.onRemovePin,
     required this.onEnableBiometrics,
     required this.onSetBiometricsEnabled,
+    required this.onExportData,
+    required this.onImportData,
   });
 
   final bool hasPin;
@@ -654,6 +855,8 @@ class SettingsPage extends StatefulWidget {
   final Future<void> Function() onRemovePin;
   final Future<bool> Function() onEnableBiometrics;
   final Future<void> Function(bool enabled) onSetBiometricsEnabled;
+  final Future<void> Function() onExportData;
+  final Future<void> Function() onImportData;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -664,6 +867,7 @@ class _SettingsPageState extends State<SettingsPage> {
   late bool _biometricsEnabled;
   bool _biometricsAvailable = false;
   bool _checkingBiometrics = true;
+  bool _handlingBackup = false;
 
   @override
   void initState() {
@@ -742,97 +946,158 @@ class _SettingsPageState extends State<SettingsPage> {
     if (mounted) setState(() => _biometricsEnabled = false);
   }
 
+  Future<void> _handleBackup(Future<void> Function() action) async {
+    if (_handlingBackup) return;
+    setState(() => _handlingBackup = true);
+    await action();
+    if (mounted) setState(() => _handlingBackup = false);
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
         body: SafeArea(
-          child: PageFrame(
-            padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(children: [
-                  IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    icon: const Icon(Icons.arrow_back_rounded),
-                  ),
-                  const SizedBox(width: 8),
-                  Text('Настройки',
-                      style: Theme.of(context).textTheme.headlineMedium),
-                ]),
-                const SizedBox(height: 28),
-                const Text('Безопасность',
-                    style: TextStyle(
-                        color: _muted,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w800)),
-                const SizedBox(height: 10),
-                _SettingsRow(
-                  icon: Icons.password_rounded,
-                  color: _amber,
-                  title: _hasPin ? 'Изменить PIN-код' : 'Установить PIN-код',
-                  subtitle: _hasPin
-                      ? 'Код состоит из 4 цифр'
-                      : 'Защита входа не включена',
-                  onTap: _managePin,
-                ),
-                if (_hasPin) ...[
-                  const SizedBox(height: 10),
-                  _SettingsRow(
-                    icon: Icons.lock_open_rounded,
-                    color: _coral,
-                    title: 'Отключить PIN-код',
-                    subtitle: 'Потребуется текущий PIN-код',
-                    onTap: _removePin,
-                  ),
-                ],
-                const SizedBox(height: 10),
-                _Card(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                  child: Row(children: [
-                    Container(
-                      width: 42,
-                      height: 42,
-                      decoration: BoxDecoration(
-                        color: _mint.withValues(alpha: .14),
-                        borderRadius: BorderRadius.circular(14),
+          child: Column(
+            children: [
+              Expanded(
+                child: PageFrame(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(children: [
+                        IconButton(
+                          onPressed: () => Navigator.of(context).pop(),
+                          icon: const Icon(Icons.arrow_back_rounded),
+                        ),
+                        const SizedBox(width: 8),
+                        Text('Настройки',
+                            style: Theme.of(context).textTheme.headlineMedium),
+                      ]),
+                      const SizedBox(height: 28),
+                      const Text('Безопасность',
+                          style: TextStyle(
+                              color: _muted,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w800)),
+                      const SizedBox(height: 10),
+                      _SettingsRow(
+                        icon: Icons.password_rounded,
+                        color: _amber,
+                        title:
+                            _hasPin ? 'Изменить PIN-код' : 'Установить PIN-код',
+                        subtitle: _hasPin
+                            ? 'Код состоит из 4 цифр'
+                            : 'Защита входа не включена',
+                        onTap: _managePin,
                       ),
-                      child:
-                          const Icon(Icons.fingerprint_rounded, color: _mint),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('Вход по биометрии',
-                              style: TextStyle(fontWeight: FontWeight.w800)),
-                          const SizedBox(height: 3),
-                          Text(
-                            _checkingBiometrics
-                                ? 'Проверяем доступность…'
-                                : _biometricsAvailable
-                                    ? 'Использует способ, настроенный на устройстве'
-                                    : 'Не настроена на этом устройстве',
-                            style: const TextStyle(color: _muted, fontSize: 12),
+                      if (_hasPin) ...[
+                        const SizedBox(height: 10),
+                        _SettingsRow(
+                          icon: Icons.lock_open_rounded,
+                          color: _coral,
+                          title: 'Отключить PIN-код',
+                          subtitle: 'Потребуется текущий PIN-код',
+                          onTap: _removePin,
+                        ),
+                      ],
+                      const SizedBox(height: 10),
+                      _Card(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 8),
+                        child: Row(children: [
+                          Container(
+                            width: 42,
+                            height: 42,
+                            decoration: BoxDecoration(
+                              color: _mint.withValues(alpha: .14),
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: const Icon(Icons.fingerprint_rounded,
+                                color: _mint),
                           ),
-                        ],
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('Вход по биометрии',
+                                    style:
+                                        TextStyle(fontWeight: FontWeight.w800)),
+                                const SizedBox(height: 3),
+                                Text(
+                                  _checkingBiometrics
+                                      ? 'Проверяем доступность…'
+                                      : _biometricsAvailable
+                                          ? 'Использует способ, настроенный на устройстве'
+                                          : 'Не настроена на этом устройстве',
+                                  style: const TextStyle(
+                                      color: _muted, fontSize: 12),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Switch.adaptive(
+                            value: _biometricsEnabled,
+                            activeThumbColor: _mint,
+                            onChanged:
+                                _checkingBiometrics ? null : _toggleBiometrics,
+                          ),
+                        ]),
                       ),
-                    ),
-                    Switch.adaptive(
-                      value: _biometricsEnabled,
-                      activeThumbColor: _mint,
-                      onChanged: _checkingBiometrics ? null : _toggleBiometrics,
-                    ),
-                  ]),
+                      const SizedBox(height: 14),
+                      const Text(
+                        'Биометрия работает только после установки PIN-кода. Если она недоступна, для входа используется PIN.',
+                        style: TextStyle(
+                            color: _muted, fontSize: 12, height: 1.45),
+                      ),
+                      const SizedBox(height: 28),
+                      const Text('Данные',
+                          style: TextStyle(
+                              color: _muted,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w800)),
+                      const SizedBox(height: 10),
+                      _SettingsRow(
+                        icon: Icons.file_upload_outlined,
+                        color: _mint,
+                        title: 'Экспортировать данные',
+                        subtitle: 'Сохранить операции, счета, категории и цели',
+                        onTap: _handlingBackup
+                            ? () {}
+                            : () => _handleBackup(widget.onExportData),
+                      ),
+                      const SizedBox(height: 10),
+                      _SettingsRow(
+                        icon: Icons.file_download_outlined,
+                        color: _amber,
+                        title: 'Импортировать данные',
+                        subtitle: 'Выбрать резервную копию Coinly (.json)',
+                        onTap: _handlingBackup
+                            ? () {}
+                            : () => _handleBackup(widget.onImportData),
+                      ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'PIN-код и реквизиты карт не входят в резервную копию.',
+                        style: TextStyle(
+                            color: _muted, fontSize: 12, height: 1.45),
+                      ),
+                    ],
+                  ),
                 ),
-                const SizedBox(height: 14),
-                const Text(
-                  'Биометрия работает только после установки PIN-кода. Если она недоступна, для входа используется PIN.',
-                  style: TextStyle(color: _muted, fontSize: 12, height: 1.45),
+              ),
+              const Padding(
+                padding: EdgeInsets.fromLTRB(20, 8, 20, 18),
+                child: Text(
+                  'Создано nifranchin',
+                  style: TextStyle(
+                    color: _muted,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       );
@@ -1369,7 +1634,10 @@ class DashboardPage extends StatelessWidget {
     required this.balance,
     required this.transactions,
     required this.accounts,
+    required this.goals,
     required this.onAdd,
+    required this.onAddGoal,
+    required this.onEditGoal,
     required this.onShowAll,
     required this.onShowAccounts,
     required this.onSettings,
@@ -1377,7 +1645,10 @@ class DashboardPage extends StatelessWidget {
   final double balance;
   final List<MoneyTransaction> transactions;
   final List<BudgetAccount> accounts;
+  final List<SavingsGoal> goals;
   final ValueChanged<TransactionKind> onAdd;
+  final VoidCallback onAddGoal;
+  final ValueChanged<SavingsGoal> onEditGoal;
   final VoidCallback onShowAll;
   final VoidCallback onShowAccounts;
   final VoidCallback onSettings;
@@ -1390,7 +1661,13 @@ class DashboardPage extends StatelessWidget {
         children: [
           _TopLine(onSettings: onSettings),
           const SizedBox(height: 20),
-          BalanceCard(balance: balance, onShowAccounts: onShowAccounts),
+          BalanceGoalsCarousel(
+            balance: balance,
+            goals: goals,
+            onShowAccounts: onShowAccounts,
+            onAddGoal: onAddGoal,
+            onEditGoal: onEditGoal,
+          ),
           const SizedBox(height: 16),
           _SectionTitle(title: 'Счета', action: ''),
           const SizedBox(height: 8),
@@ -1621,6 +1898,237 @@ class _BalanceCardState extends State<BalanceCard> {
       );
 }
 
+class BalanceGoalsCarousel extends StatefulWidget {
+  const BalanceGoalsCarousel({
+    super.key,
+    required this.balance,
+    required this.goals,
+    required this.onShowAccounts,
+    required this.onAddGoal,
+    required this.onEditGoal,
+  });
+
+  final double balance;
+  final List<SavingsGoal> goals;
+  final VoidCallback onShowAccounts;
+  final VoidCallback onAddGoal;
+  final ValueChanged<SavingsGoal> onEditGoal;
+
+  @override
+  State<BalanceGoalsCarousel> createState() => _BalanceGoalsCarouselState();
+}
+
+class _BalanceGoalsCarouselState extends State<BalanceGoalsCarousel> {
+  final _controller = PageController();
+  var _page = 0;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final count = math.max(2, widget.goals.length + 1);
+    if (_page >= count) _page = count - 1;
+    return SizedBox(
+      height: 214,
+      child: Stack(
+        children: [
+          Positioned.fill(
+            bottom: 19,
+            child: PageView.builder(
+              controller: _controller,
+              itemCount: count,
+              onPageChanged: (page) => setState(() => _page = page),
+              itemBuilder: (context, index) {
+                if (index == 0) {
+                  return BalanceCard(
+                    balance: widget.balance,
+                    onShowAccounts: widget.onShowAccounts,
+                  );
+                }
+                if (widget.goals.isEmpty) {
+                  return _EmptyGoalsCard(onAddGoal: widget.onAddGoal);
+                }
+                final goal = widget.goals[index - 1];
+                return _SavingsGoalCard(
+                  goal: goal,
+                  onTap: () => widget.onEditGoal(goal),
+                  onAddGoal: widget.onAddGoal,
+                );
+              },
+            ),
+          ),
+          Positioned(
+            bottom: 4,
+            left: 0,
+            right: 0,
+            child: Semantics(
+              label: 'Слайд ${_page + 1} из $count',
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: List.generate(
+                  count,
+                  (index) => AnimatedContainer(
+                    duration: _quickMotion,
+                    curve: _motionCurve,
+                    width: index == _page ? 17 : 6,
+                    height: 6,
+                    margin: const EdgeInsets.symmetric(horizontal: 3),
+                    decoration: BoxDecoration(
+                      color: index == _page
+                          ? _amber
+                          : _muted.withValues(alpha: .38),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyGoalsCard extends StatelessWidget {
+  const _EmptyGoalsCard({required this.onAddGoal});
+
+  final VoidCallback onAddGoal;
+
+  @override
+  Widget build(BuildContext context) => Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onAddGoal,
+          borderRadius: BorderRadius.circular(28),
+          child: Container(
+            padding: const EdgeInsets.all(22),
+            decoration: BoxDecoration(
+              color: _surfaceHigh,
+              borderRadius: BorderRadius.circular(28),
+              border: Border.all(color: Colors.white.withValues(alpha: .08)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.savings_outlined, color: _mint, size: 27),
+                const SizedBox(height: 10),
+                const Text('Первая цель накопления',
+                    style:
+                        TextStyle(fontSize: 21, fontWeight: FontWeight.w800)),
+                const SizedBox(height: 5),
+                const Text('Добавьте сумму и следите за прогрессом здесь.',
+                    style: TextStyle(color: _muted, fontSize: 13)),
+                const SizedBox(height: 14),
+                Text('Добавить цель',
+                    style:
+                        TextStyle(color: _amber, fontWeight: FontWeight.w800)),
+              ],
+            ),
+          ),
+        ),
+      );
+}
+
+class _SavingsGoalCard extends StatelessWidget {
+  const _SavingsGoalCard({
+    required this.goal,
+    required this.onTap,
+    required this.onAddGoal,
+  });
+
+  final SavingsGoal goal;
+  final VoidCallback onTap;
+  final VoidCallback onAddGoal;
+
+  @override
+  Widget build(BuildContext context) {
+    final progress = goal.progress;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(28),
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(22, 20, 14, 16),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                goal.color.withValues(alpha: .24),
+                const Color(0xFF1B2330),
+              ],
+            ),
+            borderRadius: BorderRadius.circular(28),
+            border: Border.all(color: Colors.white.withValues(alpha: .08)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(children: [
+                const Text('Цель накопления',
+                    style: TextStyle(color: Color(0xFFC8D0DC), fontSize: 13)),
+                const Spacer(),
+                IconButton(
+                  onPressed: onAddGoal,
+                  tooltip: 'Добавить цель накопления',
+                  icon: const Icon(Icons.add_rounded, size: 19),
+                  color: _amber,
+                  visualDensity: VisualDensity.compact,
+                ),
+                Text('${(progress * 100).round()}%',
+                    style: TextStyle(
+                      color: goal.color,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
+                    )),
+              ]),
+              const SizedBox(height: 7),
+              Text(
+                goal.name,
+                maxLines: 2,
+                style: const TextStyle(
+                  fontSize: 24,
+                  height: 1.04,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -.8,
+                ),
+              ),
+              const Spacer(),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: LinearProgressIndicator(
+                  value: progress,
+                  minHeight: 8,
+                  backgroundColor: Colors.white.withValues(alpha: .12),
+                  valueColor: AlwaysStoppedAnimation(goal.color),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(children: [
+                Text('${_money(goal.saved)} BYN',
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w800, fontSize: 16)),
+                const Text(' из ', style: TextStyle(color: _muted)),
+                Text('${_money(goal.target)} BYN',
+                    style: const TextStyle(color: _muted, fontSize: 13)),
+                const Spacer(),
+                const Icon(Icons.edit_outlined, size: 17, color: _muted),
+              ]),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _Pill extends StatelessWidget {
   const _Pill({required this.icon, required this.text, required this.color});
   final IconData icon;
@@ -1657,7 +2165,7 @@ class AccountsOverview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SizedBox(
-        height: 96,
+        height: 116,
         child: ListView.separated(
           scrollDirection: Axis.horizontal,
           itemCount: accounts.length,
@@ -1665,23 +2173,26 @@ class AccountsOverview extends StatelessWidget {
           itemBuilder: (context, index) {
             final account = accounts[index];
             return SizedBox(
-              width: 150,
+              width: 166,
               child: GlassPanel(
                 radius: 18,
-                padding: const EdgeInsets.all(13),
+                padding: const EdgeInsets.all(12),
                 child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(children: [
-                        Icon(account.icon, color: account.color, size: 18),
-                        const SizedBox(width: 7),
-                        Expanded(
-                            child: Text(account.name,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w700))),
-                      ]),
+                      Icon(account.icon, color: account.color, size: 20),
+                      const SizedBox(height: 6),
+                      SizedBox(
+                        height: 31,
+                        child: Text(
+                          account.name,
+                          maxLines: 2,
+                          style: const TextStyle(
+                              fontSize: 12,
+                              height: 1.25,
+                              fontWeight: FontWeight.w700),
+                        ),
+                      ),
                       const Spacer(),
                       Text('${_money(account.balance)} BYN',
                           style: const TextStyle(
@@ -2350,10 +2861,8 @@ class _CardDetailsFormSheetState extends State<CardDetailsFormSheet> {
   late final TextEditingController title;
   late final TextEditingController bank;
   late final TextEditingController number;
-  late final TextEditingController cvv;
   late final TextEditingController expiry;
   late String currency;
-  bool _cvvVisible = false;
   @override
   void initState() {
     super.initState();
@@ -2361,7 +2870,6 @@ class _CardDetailsFormSheetState extends State<CardDetailsFormSheet> {
     title = TextEditingController(text: card?.title ?? '');
     bank = TextEditingController(text: card?.bank ?? '');
     number = TextEditingController(text: card?.number ?? '');
-    cvv = TextEditingController();
     expiry = TextEditingController(text: card?.expiry ?? '');
     currency = card?.currency ?? 'BYN';
   }
@@ -2371,7 +2879,6 @@ class _CardDetailsFormSheetState extends State<CardDetailsFormSheet> {
     title.dispose();
     bank.dispose();
     number.dispose();
-    cvv.dispose();
     expiry.dispose();
     super.dispose();
   }
@@ -2445,32 +2952,6 @@ class _CardDetailsFormSheetState extends State<CardDetailsFormSheet> {
                           counterText: '')),
                   const SizedBox(height: 10),
                   TextField(
-                    controller: cvv,
-                    keyboardType: TextInputType.number,
-                    textInputAction: TextInputAction.next,
-                    obscureText: !_cvvVisible,
-                    enableSuggestions: false,
-                    autocorrect: false,
-                    enableInteractiveSelection: false,
-                    maxLength: 4,
-                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                    decoration: InputDecoration(
-                      labelText: 'CVV / CVC',
-                      hintText: '3–4 цифры',
-                      counterText: '',
-                      helperText: 'Не сохраняется в приложении',
-                      suffixIcon: IconButton(
-                        tooltip: _cvvVisible ? 'Скрыть CVV' : 'Показать CVV',
-                        onPressed: () =>
-                            setState(() => _cvvVisible = !_cvvVisible),
-                        icon: Icon(_cvvVisible
-                            ? Icons.visibility_off_outlined
-                            : Icons.visibility_outlined),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
                       controller: expiry,
                       keyboardType: TextInputType.datetime,
                       textInputAction: TextInputAction.done,
@@ -2484,10 +2965,7 @@ class _CardDetailsFormSheetState extends State<CardDetailsFormSheet> {
                             if (title.text.trim().isEmpty ||
                                 bank.text.trim().isEmpty ||
                                 !RegExp(r'^\d{12,19}$')
-                                    .hasMatch(number.text.trim()) ||
-                                (cvv.text.isNotEmpty &&
-                                    !RegExp(r'^\d{3,4}$')
-                                        .hasMatch(cvv.text.trim()))) {
+                                    .hasMatch(number.text.trim())) {
                               _showNotice(context,
                                   'Укажите название, банк и номер карты');
                               return;
@@ -2796,91 +3274,294 @@ class BudgetBar extends StatelessWidget {
 }
 
 class AnalyticsPage extends StatelessWidget {
-  const AnalyticsPage({super.key});
+  const AnalyticsPage({super.key, required this.transactions});
+
+  final List<MoneyTransaction> transactions;
+
   @override
-  Widget build(BuildContext context) => PageFrame(
+  Widget build(BuildContext context) {
+    final today = DateTime.now();
+    final monthTransactions =
+        transactions.where((item) => _sameMonth(_dateOf(item), today)).toList();
+    final income = monthTransactions
+        .where((item) => item.kind == TransactionKind.income)
+        .fold<double>(0, (sum, item) => sum + item.amount.abs());
+    final expenses = monthTransactions
+        .where((item) => item.kind == TransactionKind.expense)
+        .fold<double>(0, (sum, item) => sum + item.amount.abs());
+    final categories = _expenseCategories(monthTransactions);
+    final monthlyData = _monthlyCashflow(transactions, today);
+    return PageFrame(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(
+                'Аналитика',
+                style: Theme.of(context)
+                    .textTheme
+                    .headlineMedium
+                    ?.copyWith(fontWeight: FontWeight.w800),
+              ),
+              const Spacer(),
+              const _MonthSelector(),
+            ],
+          ),
+          const SizedBox(height: 24),
+          Row(
+            children: [
+              Expanded(
+                child: _Metric(
+                    label: 'Доходы', amount: _money(income), color: _mint),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _Metric(
+                    label: 'Расходы', amount: _money(expenses), color: _coral),
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+          const Text(
+            'Расходы по категориям',
+            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17),
+          ),
+          const SizedBox(height: 13),
+          ExpenseBreakdownCard(categories: categories),
+          const SizedBox(height: 22),
+          const Text(
+            'Доходы и расходы по месяцам',
+            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Последние 6 месяцев · BYN',
+            style: TextStyle(color: _muted, fontSize: 12),
+          ),
+          const SizedBox(height: 13),
+          _Card(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 13),
+            child: MonthlyCashflowChart(data: monthlyData),
+          ),
+          const SizedBox(height: 22),
+          _Card(
+            padding: const EdgeInsets.fromLTRB(18, 17, 18, 15),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Динамика баланса',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'Август 2026 · BYN',
+                  style: TextStyle(color: _muted, fontSize: 12),
+                ),
+                const SizedBox(height: 18),
+                const SizedBox(height: 145, child: BalanceChart()),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class ExpenseCategoryData {
+  ExpenseCategoryData(this.name, this.amount, this.color);
+
+  final String name;
+  double amount;
+  final Color color;
+}
+
+class MonthlyCashflowData {
+  const MonthlyCashflowData(this.month, this.income, this.expense);
+
+  final DateTime month;
+  final double income;
+  final double expense;
+}
+
+List<ExpenseCategoryData> _expenseCategories(
+    List<MoneyTransaction> transactions) {
+  final result = <ExpenseCategoryData>[];
+  for (final transaction in transactions) {
+    if (transaction.kind != TransactionKind.expense) continue;
+    final existing =
+        result.indexWhere((item) => item.name == transaction.title);
+    if (existing == -1) {
+      result.add(ExpenseCategoryData(
+          transaction.title, transaction.amount.abs(), transaction.color));
+    } else {
+      result[existing].amount += transaction.amount.abs();
+    }
+  }
+  result.sort((left, right) => right.amount.compareTo(left.amount));
+  return result;
+}
+
+List<MonthlyCashflowData> _monthlyCashflow(
+    List<MoneyTransaction> transactions, DateTime today) {
+  return List.generate(6, (index) {
+    final month = DateTime(today.year, today.month - 5 + index);
+    var income = 0.0;
+    var expense = 0.0;
+    for (final transaction in transactions) {
+      if (!_sameMonth(_dateOf(transaction), month)) continue;
+      if (transaction.kind == TransactionKind.income) {
+        income += transaction.amount.abs();
+      }
+      if (transaction.kind == TransactionKind.expense) {
+        expense += transaction.amount.abs();
+      }
+    }
+    return MonthlyCashflowData(month, income, expense);
+  });
+}
+
+class MonthlyCashflowChart extends StatelessWidget {
+  const MonthlyCashflowChart({super.key, required this.data});
+
+  final List<MonthlyCashflowData> data;
+
+  @override
+  Widget build(BuildContext context) {
+    final highest = data.fold<double>(1,
+        (value, item) => math.max(value, math.max(item.income, item.expense)));
+    return Semantics(
+      label: 'Доходы и расходы за последние шесть месяцев',
+      child: SizedBox(
+        height: 158,
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
-              children: [
-                Text(
-                  'Аналитика',
-                  style: Theme.of(context)
-                      .textTheme
-                      .headlineMedium
-                      ?.copyWith(fontWeight: FontWeight.w800),
-                ),
-                const Spacer(),
-                const _MonthSelector(),
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: const [
+                _ChartLegend(color: _mint, label: 'Доходы'),
+                SizedBox(width: 11),
+                _ChartLegend(color: _coral, label: 'Расходы'),
               ],
             ),
-            const SizedBox(height: 24),
-            Row(
-              children: [
-                Expanded(
-                  child:
-                      _Metric(label: 'Доходы', amount: '2 450', color: _mint),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child:
-                      _Metric(label: 'Расходы', amount: '1 282', color: _coral),
-                ),
-              ],
-            ),
-            const SizedBox(height: 24),
-            _Card(
-              padding: const EdgeInsets.fromLTRB(18, 17, 18, 15),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Динамика баланса',
-                    style: TextStyle(fontWeight: FontWeight.w800),
-                  ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    'Август 2026 · BYN',
-                    style: TextStyle(color: _muted, fontSize: 12),
-                  ),
-                  const SizedBox(height: 18),
-                  const SizedBox(height: 145, child: BalanceChart()),
-                ],
-              ),
-            ),
-            const SizedBox(height: 22),
-            const Text(
-              'Расходы по категориям',
-              style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17),
-            ),
-            const SizedBox(height: 13),
-            _Card(
+            const SizedBox(height: 7),
+            Expanded(
               child: Row(
-                children: [
-                  const SizedBox(
-                      width: 112, height: 112, child: ExpenseDonut()),
-                  const SizedBox(width: 18),
-                  Expanded(
-                    child: Column(
-                      children: const [
-                        Legend(text: 'Продукты', amount: '32%', color: _mint),
-                        Legend(text: 'Покупки', amount: '24%', color: _amber),
-                        Legend(text: 'Кафе', amount: '18%', color: _coral),
-                        Legend(
-                          text: 'Другое',
-                          amount: '26%',
-                          color: Color(0xFF677084),
-                        ),
-                      ],
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: data.map((item) {
+                  return Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 3),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          Expanded(
+                            child: Align(
+                              alignment: Alignment.bottomCenter,
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.end,
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  _CashflowBar(
+                                    height: item.income / highest,
+                                    color: _mint,
+                                    label:
+                                        '${_monthShort(item.month)}: доходы ${_money(item.income)} BYN',
+                                  ),
+                                  const SizedBox(width: 3),
+                                  _CashflowBar(
+                                    height: item.expense / highest,
+                                    color: _coral,
+                                    label:
+                                        '${_monthShort(item.month)}: расходы ${_money(item.expense)} BYN',
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 7),
+                          Text(_monthShort(item.month),
+                              style: const TextStyle(
+                                  color: _muted,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w700)),
+                        ],
+                      ),
                     ),
-                  ),
-                ],
+                  );
+                }).toList(),
               ),
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _ChartLegend extends StatelessWidget {
+  const _ChartLegend({required this.color, required this.label});
+
+  final Color color;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 7,
+            height: 7,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 4),
+          Text(label, style: const TextStyle(color: _muted, fontSize: 10)),
+        ],
       );
+}
+
+class _CashflowBar extends StatelessWidget {
+  const _CashflowBar(
+      {required this.height, required this.color, required this.label});
+
+  final double height;
+  final Color color;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+        label: label,
+        child: AnimatedContainer(
+          duration: _quickMotion,
+          curve: _motionCurve,
+          width: 8,
+          height: math.max(3, height * 92),
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+          ),
+        ),
+      );
+}
+
+String _monthShort(DateTime date) {
+  const months = [
+    'янв',
+    'фев',
+    'мар',
+    'апр',
+    'май',
+    'июн',
+    'июл',
+    'авг',
+    'сен',
+    'окт',
+    'ноя',
+    'дек'
+  ];
+  return months[date.month - 1];
 }
 
 class _Metric extends StatelessWidget {
@@ -2969,49 +3650,163 @@ class Legend extends StatelessWidget {
       );
 }
 
-class ExpenseDonut extends StatelessWidget {
-  const ExpenseDonut({super.key});
+class ExpenseBreakdownCard extends StatefulWidget {
+  const ExpenseBreakdownCard({super.key, required this.categories});
+
+  final List<ExpenseCategoryData> categories;
+
   @override
-  Widget build(BuildContext context) => RepaintBoundary(
-        child: CustomPaint(
-          painter: _DonutPainter(),
-          child: const Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  '1 282',
-                  style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
-                ),
-                Text('BYN', style: TextStyle(fontSize: 10, color: _muted)),
-              ],
-            ),
+  State<ExpenseBreakdownCard> createState() => _ExpenseBreakdownCardState();
+}
+
+class _ExpenseBreakdownCardState extends State<ExpenseBreakdownCard> {
+  int? _selected;
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.categories.isEmpty) {
+      return const _Card(
+        child: Padding(
+          padding: EdgeInsets.symmetric(vertical: 22),
+          child: Center(
+            child: Text('За этот месяц пока нет расходов',
+                style: TextStyle(color: _muted)),
           ),
         ),
       );
+    }
+    final total = widget.categories
+        .fold<double>(0, (sum, category) => sum + category.amount);
+    return _Card(
+      child: Row(
+        children: [
+          SizedBox(
+            width: 112,
+            height: 112,
+            child: ExpenseDonut(
+              categories: widget.categories,
+              selectedIndex: _selected,
+              onSelected: (index) => setState(() => _selected = index),
+            ),
+          ),
+          const SizedBox(width: 18),
+          Expanded(
+            child: Column(
+              children: widget.categories.take(4).map((category) {
+                final percentage = category.amount / total * 100;
+                return Legend(
+                  text: category.name,
+                  amount: '${percentage.round()}%',
+                  color: category.color,
+                );
+              }).toList(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class ExpenseDonut extends StatelessWidget {
+  const ExpenseDonut({
+    super.key,
+    required this.categories,
+    required this.selectedIndex,
+    required this.onSelected,
+  });
+
+  final List<ExpenseCategoryData> categories;
+  final int? selectedIndex;
+  final ValueChanged<int> onSelected;
+
+  void _handleTap(TapUpDetails details, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final delta = details.localPosition - center;
+    final radius = size.width / 2;
+    if (delta.distance < radius - 25 || delta.distance > radius + 2) return;
+    var angle = math.atan2(delta.dy, delta.dx) + math.pi / 2;
+    if (angle < 0) angle += math.pi * 2;
+    final total =
+        categories.fold<double>(0, (sum, category) => sum + category.amount);
+    var start = 0.0;
+    for (var index = 0; index < categories.length; index++) {
+      final sweep = math.pi * 2 * categories[index].amount / total;
+      if (angle >= start && angle <= start + sweep) {
+        onSelected(index);
+        return;
+      }
+      start += sweep;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final total =
+        categories.fold<double>(0, (sum, category) => sum + category.amount);
+    final selected = selectedIndex == null ? null : categories[selectedIndex!];
+    return RepaintBoundary(
+      child: LayoutBuilder(
+        builder: (context, constraints) => GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapUp: (details) => _handleTap(
+              details, Size(constraints.maxWidth, constraints.maxHeight)),
+          child: CustomPaint(
+            painter: _DonutPainter(categories, selectedIndex),
+            child: Center(
+              child: Semantics(
+                label: selected == null
+                    ? 'Всего расходов ${_money(total)} BYN'
+                    : '${selected.name}: ${_money(selected.amount)} BYN',
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      _money(selected?.amount ?? total),
+                      style: const TextStyle(
+                          fontWeight: FontWeight.w800, fontSize: 15),
+                    ),
+                    Text(
+                      selected?.name ?? 'BYN',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 10, color: _muted),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _DonutPainter extends CustomPainter {
+  const _DonutPainter(this.categories, this.selectedIndex);
+
+  final List<ExpenseCategoryData> categories;
+  final int? selectedIndex;
+
   @override
   void paint(Canvas c, Size s) {
     final r = s.width / 2;
     final rect = Rect.fromCircle(center: Offset(r, r), radius: r - 8);
     var start = -math.pi / 2;
-    for (final part in [
-      (0.32, _mint),
-      (0.24, _amber),
-      (0.18, _coral),
-      (0.26, const Color(0xFF677084)),
-    ]) {
-      final sweep = math.pi * 2 * part.$1 - .06;
+    final total =
+        categories.fold<double>(0, (sum, category) => sum + category.amount);
+    for (var index = 0; index < categories.length; index++) {
+      final category = categories[index];
+      final sweep = math.pi * 2 * category.amount / total - .06;
       c.drawArc(
         rect,
         start,
-        sweep,
+        math.max(.01, sweep),
         false,
         Paint()
-          ..color = part.$2
-          ..strokeWidth = 16
+          ..color = category.color
+          ..strokeWidth = index == selectedIndex ? 19 : 16
           ..style = PaintingStyle.stroke
           ..strokeCap = StrokeCap.round,
       );
@@ -3020,19 +3815,123 @@ class _DonutPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_) => false;
+  bool shouldRepaint(covariant _DonutPainter oldDelegate) =>
+      oldDelegate.categories != categories ||
+      oldDelegate.selectedIndex != selectedIndex;
 }
 
-class BalanceChart extends StatelessWidget {
+class BalanceChart extends StatefulWidget {
   const BalanceChart({super.key});
+
+  @override
+  State<BalanceChart> createState() => _BalanceChartState();
+}
+
+class _BalanceChartState extends State<BalanceChart> {
+  static const _history = [
+    _BalanceHistoryPoint(.00, .78, '1 августа', 4150),
+    _BalanceHistoryPoint(.14, .65, '5 августа', 4280),
+    _BalanceHistoryPoint(.27, .70, '9 августа', 4215),
+    _BalanceHistoryPoint(.43, .38, '13 августа', 4520),
+    _BalanceHistoryPoint(.57, .52, '17 августа', 4390),
+    _BalanceHistoryPoint(.72, .20, '21 августа', 4680),
+    _BalanceHistoryPoint(1, .08, '25 августа', 4820.50),
+  ];
+
+  int? _selected;
+
+  List<Offset> _offsets(Size size) => _history
+      .map((point) => Offset(
+            point.x * size.width,
+            8 + point.y * (size.height - 16),
+          ))
+      .toList();
+
+  void _selectPoint(TapUpDetails details, Size size) {
+    final offsets = _offsets(size);
+    var nearest = 0;
+    var nearestDistance = double.infinity;
+    for (var index = 0; index < offsets.length; index++) {
+      final distance = (details.localPosition - offsets[index]).distanceSquared;
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearest = index;
+      }
+    }
+    if (nearestDistance <= 30 * 30) setState(() => _selected = nearest);
+  }
+
   @override
   Widget build(BuildContext context) => RepaintBoundary(
-        child: CustomPaint(
-            painter: _LinePainter(), child: const SizedBox.expand()),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final size = Size(constraints.maxWidth, constraints.maxHeight);
+            final offsets = _offsets(size);
+            final selected = _selected;
+            final point = selected == null ? null : _history[selected];
+            final offset = selected == null ? null : offsets[selected];
+            return Semantics(
+              label:
+                  'Динамика баланса. Нажмите на точку, чтобы увидеть значение',
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTapUp: (details) => _selectPoint(details, size),
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    Positioned.fill(
+                      child: CustomPaint(
+                        painter: _LinePainter(offsets, selected),
+                      ),
+                    ),
+                    if (point != null && offset != null)
+                      Positioned(
+                        left: (offset.dx - 72)
+                            .clamp(4.0, math.max(4.0, size.width - 148))
+                            .toDouble(),
+                        top: math.max(0.0, offset.dy - 43),
+                        child: IgnorePointer(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 9, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: _navy,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                  color: _amber.withValues(alpha: .55)),
+                            ),
+                            child: Text(
+                              '${point.label} · ${_money(point.balance)} BYN',
+                              style: const TextStyle(
+                                  fontSize: 11, fontWeight: FontWeight.w800),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
       );
 }
 
+class _BalanceHistoryPoint {
+  const _BalanceHistoryPoint(this.x, this.y, this.label, this.balance);
+
+  final double x;
+  final double y;
+  final String label;
+  final double balance;
+}
+
 class _LinePainter extends CustomPainter {
+  const _LinePainter(this.points, this.selected);
+
+  final List<Offset> points;
+  final int? selected;
+
   @override
   void paint(Canvas c, Size s) {
     final grid = Paint()
@@ -3040,15 +3939,6 @@ class _LinePainter extends CustomPainter {
       ..strokeWidth = 1;
     for (var y = 20.0; y < s.height; y += 36)
       c.drawLine(Offset(0, y), Offset(s.width, y), grid);
-    final points = [
-      Offset(0, 112),
-      Offset(s.width * .14, 95),
-      Offset(s.width * .27, 102),
-      Offset(s.width * .43, 60),
-      Offset(s.width * .57, 78),
-      Offset(s.width * .72, 36),
-      Offset(s.width, 18),
-    ];
     final path = Path()..moveTo(points.first.dx, points.first.dy);
     for (var i = 1; i < points.length; i++)
       path.lineTo(points[i].dx, points[i].dy);
@@ -3061,12 +3951,24 @@ class _LinePainter extends CustomPainter {
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round,
     );
-    c.drawCircle(points.last, 5, Paint()..color = _amber);
-    c.drawCircle(points.last, 9, Paint()..color = _amber.withValues(alpha: .2));
+    for (var index = 0; index < points.length; index++) {
+      final isSelected = index == selected;
+      c.drawCircle(
+        points[index],
+        isSelected ? 6 : 4,
+        Paint()..color = isSelected ? _ink : _amber,
+      );
+      c.drawCircle(
+        points[index],
+        isSelected ? 10 : 7,
+        Paint()..color = _amber.withValues(alpha: isSelected ? .24 : .11),
+      );
+    }
   }
 
   @override
-  bool shouldRepaint(_) => false;
+  bool shouldRepaint(covariant _LinePainter oldDelegate) =>
+      oldDelegate.selected != selected || oldDelegate.points != points;
 }
 
 class AddTransactionSheet extends StatefulWidget {
@@ -3719,6 +4621,165 @@ class _AddAccountSheetState extends State<AddAccountSheet> {
       );
 }
 
+class SavingsGoalSheet extends StatefulWidget {
+  const SavingsGoalSheet({super.key, this.goal});
+
+  final SavingsGoal? goal;
+
+  @override
+  State<SavingsGoalSheet> createState() => _SavingsGoalSheetState();
+}
+
+class _SavingsGoalSheetState extends State<SavingsGoalSheet> {
+  late final TextEditingController name;
+  late final TextEditingController target;
+  late final TextEditingController saved;
+
+  @override
+  void initState() {
+    super.initState();
+    final goal = widget.goal;
+    name = TextEditingController(text: goal?.name ?? '');
+    target = TextEditingController(
+      text: goal == null
+          ? ''
+          : goal.target.toStringAsFixed(2).replaceAll('.', ','),
+    );
+    saved = TextEditingController(
+      text: goal == null
+          ? ''
+          : goal.saved.toStringAsFixed(2).replaceAll('.', ','),
+    );
+  }
+
+  @override
+  void dispose() {
+    name.dispose();
+    target.dispose();
+    saved.dispose();
+    super.dispose();
+  }
+
+  double? _amount(TextEditingController controller) =>
+      double.tryParse(controller.text.replaceAll(',', '.'));
+
+  void _save() {
+    final trimmedName = name.text.trim();
+    final goalTarget = _amount(target);
+    final goalSaved = _amount(saved) ?? 0;
+    if (trimmedName.isEmpty) {
+      _showNotice(context, 'Введите название цели');
+      return;
+    }
+    if (goalTarget == null || goalTarget <= 0) {
+      _showNotice(context, 'Введите сумму цели больше нуля');
+      return;
+    }
+    if (goalSaved < 0) {
+      _showNotice(context, 'Накоплено не может быть отрицательным');
+      return;
+    }
+    Navigator.pop(
+      context,
+      SavingsGoal(
+          trimmedName, goalTarget, goalSaved, widget.goal?.color ?? _mint),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding:
+            EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+        child: SafeArea(
+          top: false,
+          child: Container(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * .82,
+            ),
+            decoration: const BoxDecoration(
+              color: _surfaceHigh,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+            ),
+            child: SingleChildScrollView(
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+              padding: const EdgeInsets.fromLTRB(20, 14, 20, 28),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: _muted,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    widget.goal == null ? 'Новая цель' : 'Изменить цель',
+                    style: const TextStyle(
+                        fontSize: 21, fontWeight: FontWeight.w800),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: name,
+                  autofocus: true,
+                  maxLength: 48,
+                  textCapitalization: TextCapitalization.sentences,
+                  textInputAction: TextInputAction.next,
+                  decoration: const InputDecoration(
+                    labelText: 'Что хотите накопить?',
+                    hintText: 'Например, новый телефон',
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: target,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  textInputAction: TextInputAction.next,
+                  inputFormatters: [_moneyInputFormatter],
+                  decoration: const InputDecoration(
+                    labelText: 'Сумма цели',
+                    suffixText: 'BYN',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: saved,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  textInputAction: TextInputAction.done,
+                  inputFormatters: [_moneyInputFormatter],
+                  onSubmitted: (_) => _save(),
+                  decoration: const InputDecoration(
+                    labelText: 'Уже накоплено',
+                    hintText: '0',
+                    suffixText: 'BYN',
+                  ),
+                ),
+                const SizedBox(height: 22),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton(
+                    onPressed: _save,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: _amber,
+                      foregroundColor: _navy,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                    ),
+                    child: Text(
+                        widget.goal == null ? 'Добавить цель' : 'Сохранить'),
+                  ),
+                ),
+              ]),
+            ),
+          ),
+        ),
+      );
+}
+
 class _Picker extends StatelessWidget {
   const _Picker({required this.label, required this.value, required this.icon});
   final String label, value;
@@ -3987,6 +5048,34 @@ class FinanceCategory {
           fontFamily: 'MaterialIcons',
         ),
         Color((json['color'] as num?)?.toInt() ?? _amber.toARGB32()),
+      );
+}
+
+class SavingsGoal {
+  SavingsGoal(this.name, this.target, this.saved, this.color);
+
+  String name;
+  double target;
+  double saved;
+  Color color;
+
+  double get progress {
+    if (target <= 0) return 0;
+    return (saved / target).clamp(0, 1).toDouble();
+  }
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'target': target,
+        'saved': saved,
+        'color': color.toARGB32(),
+      };
+
+  factory SavingsGoal.fromJson(Map<String, dynamic> json) => SavingsGoal(
+        (json['name'] as String? ?? 'Цель').trim(),
+        (json['target'] as num?)?.toDouble() ?? 0,
+        (json['saved'] as num?)?.toDouble() ?? 0,
+        Color((json['color'] as num?)?.toInt() ?? _mint.toARGB32()),
       );
 }
 
@@ -4267,12 +5356,14 @@ class AppData {
     required this.balance,
     required this.accounts,
     required this.categories,
+    required this.goals,
   });
 
   final List<MoneyTransaction> transactions;
   final double balance;
   final List<BudgetAccount> accounts;
   final List<FinanceCategory> categories;
+  final List<SavingsGoal> goals;
 
   factory AppData.defaults() => AppData(
         transactions: [
@@ -4343,6 +5434,10 @@ class AppData {
           FinanceCategory(
               'Покупки', Icons.shopping_bag_rounded, const Color(0xFFB9A5FF)),
         ],
+        goals: [
+          SavingsGoal('Подушка безопасности', 3000, 1200, _mint),
+          SavingsGoal('Поездка к морю', 2400, 760, _amber),
+        ],
       );
 
   static List<CardDetails> defaultCards() => [
@@ -4354,6 +5449,7 @@ class AppData {
         'transactions': transactions.map((item) => item.toJson()).toList(),
         'accounts': accounts.map((item) => item.toJson()).toList(),
         'categories': categories.map((item) => item.toJson()).toList(),
+        'goals': goals.map((item) => item.toJson()).toList(),
       };
 
   factory AppData.fromJson(Map<String, dynamic> json) => AppData(
@@ -4366,6 +5462,7 @@ class AppData {
         categories: _jsonList(json['categories'])
             .map(FinanceCategory.fromJson)
             .toList(),
+        goals: _jsonList(json['goals']).map(SavingsGoal.fromJson).toList(),
       );
 }
 
