@@ -1,3 +1,27 @@
+import java.io.FileInputStream
+import java.util.Properties
+
+val releaseKeyProperties = Properties()
+val releaseKeyPropertiesFile = rootProject.file("key.properties")
+
+val hasReleaseSigning = releaseKeyPropertiesFile.exists()
+
+if (hasReleaseSigning) {
+    releaseKeyProperties.load(FileInputStream(releaseKeyPropertiesFile))
+}
+
+if (!hasReleaseSigning) {
+    tasks.configureEach {
+        if (name.contains("release", ignoreCase = true)) {
+            doFirst {
+                throw GradleException(
+                    "Release signing configuration is missing: android/key.properties",
+                )
+            }
+        }
+    }
+}
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
@@ -31,8 +55,22 @@ android {
 
     buildTypes {
         release {
-            // Production builds must use a dedicated release key. Never fall
-            // back to the publicly known Android debug key.
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.create("release") {
+                    keyAlias = requireNotNull(
+                        releaseKeyProperties.getProperty("keyAlias"),
+                    )
+                    keyPassword = requireNotNull(
+                        releaseKeyProperties.getProperty("keyPassword"),
+                    )
+                    storeFile = file(requireNotNull(
+                        releaseKeyProperties.getProperty("storeFile"),
+                    ))
+                    storePassword = requireNotNull(
+                        releaseKeyProperties.getProperty("storePassword"),
+                    )
+                }
+            }
         }
     }
 }

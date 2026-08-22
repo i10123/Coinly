@@ -43,6 +43,7 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+/coinly.apk
 
 # Credentials and signing material must never be committed.
 .env

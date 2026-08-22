@@ -415,35 +415,41 @@ class _CoinlyHomeState extends State<CoinlyHome> {
   late List<CardDetails> _cards;
   late List<SavingsGoal> _goals;
   late String _currency;
+  Future<void> _saveQueue = Future.value();
 
   @override
   void initState() {
     super.initState();
-    final data = widget.initialData ?? AppData.defaults();
+    final data = widget.initialData ?? AppData.empty();
     _transactions = data.transactions;
-    _balance = data.balance;
     _accounts = data.accounts;
+    _balance = 0;
+    _syncBalance();
     _categories = data.categories;
     _goals = data.goals;
     _currency = data.currency;
     _displayCurrency = _currency;
-    _cards = widget.initialCards ?? AppData.defaultCards();
+    _cards = widget.initialCards ?? [];
     if (widget.initialData == null || widget.initialCards == null) _persist();
   }
 
   Future<void> _persist() async {
-    final data = AppData(
-      transactions: _transactions,
-      balance: _balance,
-      accounts: _accounts,
-      categories: _categories,
-      goals: _goals,
-      currency: _currency,
-    );
-    await Future.wait([
-      widget.storage.saveData(data),
-      widget.storage.saveCards(_cards),
-    ]);
+    _syncBalance();
+    final dataSnapshot = _dataSnapshot().toJson();
+    final cardsSnapshot = _cards.map((card) => card.toJson()).toList();
+    await _enqueueStorageWrite(() async {
+      await Future.wait([
+        widget.storage.saveData(AppData.fromJson(dataSnapshot)),
+        widget.storage.saveCards(
+            cardsSnapshot.map((card) => CardDetails.fromJson(card)).toList()),
+      ]);
+    });
+  }
+
+  Future<void> _enqueueStorageWrite(Future<void> Function() write) {
+    final nextSave = _saveQueue.catchError((_) {}).then((_) => write());
+    _saveQueue = nextSave;
+    return nextSave;
   }
 
   Future<void> _addTransaction(
@@ -530,11 +536,19 @@ class _CoinlyHomeState extends State<CoinlyHome> {
           transaction.amount * multiplier;
       _accountByName(transaction.account)?.balance +=
           transaction.amount * multiplier;
+      _syncBalance();
       return;
     }
     _accountByName(transaction.account)?.balance +=
         transaction.amount * multiplier;
-    _balance += transaction.amount * multiplier;
+    _syncBalance();
+  }
+
+  void _syncBalance() {
+    _balance = _accounts.fold<double>(
+      0,
+      (total, account) => total + account.balance,
+    );
   }
 
   BudgetAccount? _accountByName(String? name) {
@@ -549,27 +563,72 @@ class _CoinlyHomeState extends State<CoinlyHome> {
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => AddAccountSheet(dark: widget.dark),
+      builder: (_) => AddAccountSheet(
+        dark: widget.dark,
+        existingNames: _accounts.map((account) => account.name).toList(),
+      ),
     );
     if (created != null) {
-      setState(() => _accounts.add(created));
+      setState(() {
+        _accounts.add(created);
+        _syncBalance();
+      });
       await _persist();
     }
   }
 
   Future<void> _editAccount(BudgetAccount account) async {
-    final balance = await showModalBottomSheet<double>(
+    final updated = await showModalBottomSheet<AccountEditResult>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => EditAccountBalanceSheet(account: account),
+      builder: (_) => EditAccountSheet(
+        account: account,
+        existingNames: _accounts.map((item) => item.name).toList(),
+      ),
     );
-    if (balance == null) return;
+    if (updated == null) return;
     setState(() {
-      _balance += balance - account.balance;
-      account.balance = balance;
+      final previousName = account.name;
+      account.name = updated.name;
+      account.balance = updated.balance;
+      _renameAccountReferences(previousName, updated.name);
+      _syncBalance();
     });
     await _persist();
+  }
+
+  void _renameAccountReferences(String previousName, String updatedName) {
+    if (previousName == updatedName) return;
+    for (var index = 0; index < _transactions.length; index++) {
+      final transaction = _transactions[index];
+      if (transaction.account != previousName &&
+          transaction.fromAccount != previousName) {
+        continue;
+      }
+      final accountName = transaction.account == previousName
+          ? updatedName
+          : transaction.account;
+      final sourceName = transaction.fromAccount == previousName
+          ? updatedName
+          : transaction.fromAccount;
+      final subtitle = transaction.kind == TransactionKind.transfer
+          ? '${sourceName ?? ''} → ${accountName ?? ''}'
+          : accountName == null
+              ? transaction.subtitle
+              : '$accountName · ${_operationDateLabel(_dateOf(transaction))}';
+      _transactions[index] = MoneyTransaction(
+        transaction.title,
+        subtitle,
+        transaction.amount,
+        transaction.icon,
+        transaction.color,
+        kind: transaction.kind,
+        account: accountName,
+        fromAccount: sourceName,
+        date: transaction.date,
+      );
+    }
   }
 
   Future<void> _addCard() async {
@@ -703,23 +762,24 @@ class _CoinlyHomeState extends State<CoinlyHome> {
           onDeleteCard: _deleteCard,
           onCopyCardNumber: _copyCardNumber),
       CategoriesPage(categories: _categories, onChanged: _persist),
-      AnalyticsPage(transactions: _transactions),
+      AnalyticsPage(transactions: _transactions, balance: _balance),
     ];
     return Scaffold(
       body: SafeArea(
         child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 220),
+          duration: const Duration(milliseconds: 160),
           switchInCurve: _motionCurve,
           switchOutCurve: Curves.easeIn,
+          layoutBuilder: (currentChild, previousChildren) => Stack(
+            fit: StackFit.expand,
+            children: [
+              ...previousChildren,
+              if (currentChild != null) currentChild,
+            ],
+          ),
           transitionBuilder: (child, animation) => FadeTransition(
             opacity: animation,
-            child: SlideTransition(
-              position: Tween<Offset>(
-                begin: const Offset(.025, 0),
-                end: Offset.zero,
-              ).animate(animation),
-              child: RepaintBoundary(child: child),
-            ),
+            child: RepaintBoundary(child: child),
           ),
           child: KeyedSubtree(key: ValueKey(_tab), child: pages[_tab]),
         ),
@@ -850,8 +910,8 @@ class _CoinlyHomeState extends State<CoinlyHome> {
       if (confirmed != true || !mounted) return;
       setState(() {
         _transactions = imported.transactions;
-        _balance = imported.balance;
         _accounts = imported.accounts;
+        _syncBalance();
         _categories = imported.categories;
         _goals = imported.goals;
         _currency = imported.currency;
@@ -877,8 +937,26 @@ class _CoinlyHomeState extends State<CoinlyHome> {
       _isSafeNumber(json['balance']) &&
       _isSafeList(json['transactions'], maxItems: 5000) &&
       _isSafeList(json['accounts'], maxItems: 500) &&
+      _hasValidAccountNames(json['accounts']) &&
       _isSafeList(json['categories'], maxItems: 500) &&
       _isSafeList(json['goals'], maxItems: 500);
+
+  bool _hasValidAccountNames(Object? value) {
+    if (value is! List) return false;
+    final names = <String>{};
+    for (final entry in value) {
+      if (entry is! Map) return false;
+      final name = entry['name'];
+      if (name is! String) return false;
+      final normalized = name.trim();
+      if (normalized.isEmpty ||
+          normalized.length > 60 ||
+          !names.add(normalized.toLowerCase())) {
+        return false;
+      }
+    }
+    return true;
+  }
 
   bool _isSafeNumber(Object? value) =>
       value is num && value.isFinite && value.abs() <= 1000000000000;
@@ -962,13 +1040,13 @@ class _CoinlyHomeState extends State<CoinlyHome> {
     final empty = AppData.empty(currency: _currency);
     setState(() {
       _transactions = empty.transactions;
-      _balance = empty.balance;
       _accounts = empty.accounts;
+      _syncBalance();
       _categories = empty.categories;
       _goals = empty.goals;
       _cards = [];
     });
-    await widget.storage.clearFinancialData(empty);
+    await _enqueueStorageWrite(() => widget.storage.clearFinancialData(empty));
     if (mounted) _showNotice(context, 'Данные приложения очищены');
   }
 }
@@ -1847,6 +1925,15 @@ class DashboardPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final today = DateTime.now();
+    final monthTransactions =
+        transactions.where((item) => _sameMonth(_dateOf(item), today)).toList();
+    final income = monthTransactions
+        .where((item) => item.kind == TransactionKind.income)
+        .fold<double>(0, (sum, item) => sum + item.amount.abs());
+    final expenses = monthTransactions
+        .where((item) => item.kind == TransactionKind.expense)
+        .fold<double>(0, (sum, item) => sum + item.amount.abs());
     return PageFrame(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1855,6 +1942,7 @@ class DashboardPage extends StatelessWidget {
           const SizedBox(height: 20),
           BalanceGoalsCarousel(
             balance: balance,
+            transactions: transactions,
             goals: goals,
             onShowAccounts: onShowAccounts,
             onAddGoal: onAddGoal,
@@ -1870,16 +1958,16 @@ class DashboardPage extends StatelessWidget {
               Expanded(
                 child: MiniStat(
                   label: 'Доходы',
-                  value: '+ 2 450,00',
+                  value: '+ ${_money(income)} $_displayCurrency',
                   icon: Icons.south_west_rounded,
                   color: _mint,
                 ),
               ),
               const SizedBox(width: 12),
-              const Expanded(
+              Expanded(
                 child: MiniStat(
                   label: 'Расходы',
-                  value: '− 842,30',
+                  value: '− ${_money(expenses)} $_displayCurrency',
                   icon: Icons.north_east_rounded,
                   color: _coral,
                 ),
@@ -1999,8 +2087,12 @@ class GlassPanel extends StatelessWidget {
 
 class BalanceCard extends StatefulWidget {
   const BalanceCard(
-      {super.key, required this.balance, required this.onShowAccounts});
+      {super.key,
+      required this.balance,
+      required this.transactions,
+      required this.onShowAccounts});
   final double balance;
+  final List<MoneyTransaction> transactions;
   final VoidCallback onShowAccounts;
   @override
   State<BalanceCard> createState() => _BalanceCardState();
@@ -2009,93 +2101,114 @@ class BalanceCard extends StatefulWidget {
 class _BalanceCardState extends State<BalanceCard> {
   bool visible = true;
   @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.fromLTRB(22, 20, 14, 15),
-        decoration: BoxDecoration(
-          gradient: const LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0xFF293547), Color(0xFF1B2330)],
+  Widget build(BuildContext context) {
+    final today = DateTime.now();
+    final monthTransactions = widget.transactions
+        .where((item) => _sameMonth(_dateOf(item), today))
+        .toList();
+    final monthNet = monthTransactions
+        .where((item) => item.kind != TransactionKind.transfer)
+        .fold<double>(0, (sum, item) => sum + item.amount);
+    final hasMonthOperations = monthTransactions.isNotEmpty;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(22, 20, 14, 15),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF293547), Color(0xFF1B2330)],
+        ),
+        borderRadius: BorderRadius.circular(28),
+        border: Border.all(color: Colors.white.withValues(alpha: .08)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Text('Общий баланс',
+                  style: TextStyle(color: Color(0xFFC8D0DC), fontSize: 13)),
+              const Spacer(),
+              IconButton(
+                onPressed: () => setState(() => visible = !visible),
+                icon: Icon(
+                    visible
+                        ? Icons.visibility_outlined
+                        : Icons.visibility_off_outlined,
+                    size: 19),
+                color: _muted,
+                visualDensity: VisualDensity.compact,
+              ),
+            ],
           ),
-          borderRadius: BorderRadius.circular(28),
-          border: Border.all(color: Colors.white.withValues(alpha: .08)),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Text('Общий баланс',
-                    style: TextStyle(color: Color(0xFFC8D0DC), fontSize: 13)),
-                const Spacer(),
-                IconButton(
-                  onPressed: () => setState(() => visible = !visible),
-                  icon: Icon(
-                      visible
-                          ? Icons.visibility_outlined
-                          : Icons.visibility_off_outlined,
-                      size: 19),
-                  color: _muted,
-                  visualDensity: VisualDensity.compact,
-                ),
-              ],
-            ),
-            const SizedBox(height: 9),
-            AnimatedSwitcher(
-              duration: _quickMotion,
-              switchInCurve: _motionCurve,
-              transitionBuilder: (child, animation) => FadeTransition(
-                opacity: animation,
-                child: SlideTransition(
-                  position: Tween<Offset>(
-                    begin: const Offset(0, .08),
-                    end: Offset.zero,
-                  ).animate(animation),
-                  child: child,
-                ),
-              ),
-              child: Text(
-                visible
-                    ? '${_money(widget.balance)} $_displayCurrency'
-                    : '•••••• $_displayCurrency',
-                key: ValueKey(visible),
-                style: const TextStyle(
-                  fontSize: 33,
-                  height: 1.02,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: -1.35,
-                ),
+          const SizedBox(height: 9),
+          AnimatedSwitcher(
+            duration: _quickMotion,
+            switchInCurve: _motionCurve,
+            transitionBuilder: (child, animation) => FadeTransition(
+              opacity: animation,
+              child: SlideTransition(
+                position: Tween<Offset>(
+                  begin: const Offset(0, .08),
+                  end: Offset.zero,
+                ).animate(animation),
+                child: child,
               ),
             ),
-            const SizedBox(height: 22),
-            Row(
-              children: [
-                _Pill(
-                  icon: Icons.trending_up_rounded,
-                  text: '+ 14,8% за месяц',
-                  color: _mint,
-                ),
-                const Spacer(),
-                IconButton.filledTonal(
-                  onPressed: widget.onShowAccounts,
-                  icon: const Icon(Icons.arrow_outward_rounded, size: 19),
-                  style: IconButton.styleFrom(
-                    backgroundColor: _amber,
-                    foregroundColor: _navy,
-                    minimumSize: const Size(40, 40),
-                  ),
-                ),
-              ],
+            child: Text(
+              visible
+                  ? '${_money(widget.balance)} $_displayCurrency'
+                  : '•••••• $_displayCurrency',
+              key: ValueKey(visible),
+              style: const TextStyle(
+                fontSize: 33,
+                height: 1.02,
+                fontWeight: FontWeight.w600,
+                letterSpacing: -1.35,
+              ),
             ),
-          ],
-        ),
-      );
+          ),
+          const SizedBox(height: 22),
+          Row(
+            children: [
+              _Pill(
+                icon: hasMonthOperations
+                    ? monthNet >= 0
+                        ? Icons.trending_up_rounded
+                        : Icons.trending_down_rounded
+                    : Icons.hourglass_empty_rounded,
+                text: hasMonthOperations
+                    ? '${monthNet >= 0 ? '+' : '−'}${_money(monthNet.abs())} за месяц'
+                    : 'Нет операций за месяц',
+                color: hasMonthOperations
+                    ? monthNet >= 0
+                        ? _mint
+                        : _coral
+                    : _muted,
+              ),
+              const Spacer(),
+              IconButton.filledTonal(
+                onPressed: widget.onShowAccounts,
+                icon: const Icon(Icons.arrow_outward_rounded, size: 19),
+                style: IconButton.styleFrom(
+                  backgroundColor: _amber,
+                  foregroundColor: _navy,
+                  minimumSize: const Size(40, 40),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class BalanceGoalsCarousel extends StatefulWidget {
   const BalanceGoalsCarousel({
     super.key,
     required this.balance,
+    required this.transactions,
     required this.goals,
     required this.onShowAccounts,
     required this.onAddGoal,
@@ -2103,6 +2216,7 @@ class BalanceGoalsCarousel extends StatefulWidget {
   });
 
   final double balance;
+  final List<MoneyTransaction> transactions;
   final List<SavingsGoal> goals;
   final VoidCallback onShowAccounts;
   final VoidCallback onAddGoal;
@@ -2140,6 +2254,7 @@ class _BalanceGoalsCarouselState extends State<BalanceGoalsCarousel> {
                 if (index == 0) {
                   return BalanceCard(
                     balance: widget.balance,
+                    transactions: widget.transactions,
                     onShowAccounts: widget.onShowAccounts,
                   );
                 }
@@ -3476,9 +3591,11 @@ class BudgetBar extends StatelessWidget {
 }
 
 class AnalyticsPage extends StatelessWidget {
-  const AnalyticsPage({super.key, required this.transactions});
+  const AnalyticsPage(
+      {super.key, required this.transactions, required this.balance});
 
   final List<MoneyTransaction> transactions;
+  final double balance;
 
   @override
   Widget build(BuildContext context) {
@@ -3558,11 +3675,17 @@ class AnalyticsPage extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  'Август 2026 · $_displayCurrency',
+                  '${_monthTitle(today)} · $_displayCurrency',
                   style: TextStyle(color: _muted, fontSize: 12),
                 ),
                 const SizedBox(height: 18),
-                const SizedBox(height: 145, child: BalanceChart()),
+                SizedBox(
+                  height: 145,
+                  child: BalanceChart(
+                    transactions: transactions,
+                    balance: balance,
+                  ),
+                ),
               ],
             ),
           ),
@@ -3791,7 +3914,7 @@ class _Metric extends StatelessWidget {
             ),
             const SizedBox(height: 5),
             Text(
-              'за август',
+              'за текущий месяц',
               style:
                   TextStyle(color: color.withValues(alpha: .8), fontSize: 11),
             ),
@@ -3809,14 +3932,14 @@ class _MonthSelector extends StatelessWidget {
           color: _surface,
           borderRadius: BorderRadius.circular(12),
         ),
-        child: const Row(
+        child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              'Август',
-              style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
+              _monthShort(DateTime.now()),
+              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
             ),
-            Icon(Icons.keyboard_arrow_down_rounded, size: 18),
+            const Icon(Icons.keyboard_arrow_down_rounded, size: 18),
           ],
         ),
       );
@@ -4023,34 +4146,30 @@ class _DonutPainter extends CustomPainter {
 }
 
 class BalanceChart extends StatefulWidget {
-  const BalanceChart({super.key});
+  const BalanceChart(
+      {super.key, required this.transactions, required this.balance});
+
+  final List<MoneyTransaction> transactions;
+  final double balance;
 
   @override
   State<BalanceChart> createState() => _BalanceChartState();
 }
 
 class _BalanceChartState extends State<BalanceChart> {
-  static const _history = [
-    _BalanceHistoryPoint(.00, .78, '1 августа', 4150),
-    _BalanceHistoryPoint(.14, .65, '5 августа', 4280),
-    _BalanceHistoryPoint(.27, .70, '9 августа', 4215),
-    _BalanceHistoryPoint(.43, .38, '13 августа', 4520),
-    _BalanceHistoryPoint(.57, .52, '17 августа', 4390),
-    _BalanceHistoryPoint(.72, .20, '21 августа', 4680),
-    _BalanceHistoryPoint(1, .08, '25 августа', 4820.50),
-  ];
-
   int? _selected;
 
-  List<Offset> _offsets(Size size) => _history
-      .map((point) => Offset(
-            point.x * size.width,
-            8 + point.y * (size.height - 16),
-          ))
-      .toList();
+  List<Offset> _offsets(Size size, List<_BalanceHistoryPoint> history) =>
+      history
+          .map((point) => Offset(
+                point.x * size.width,
+                8 + point.y * (size.height - 16),
+              ))
+          .toList();
 
-  void _selectPoint(TapUpDetails details, Size size) {
-    final offsets = _offsets(size);
+  void _selectPoint(
+      TapUpDetails details, Size size, List<_BalanceHistoryPoint> history) {
+    final offsets = _offsets(size, history);
     var nearest = 0;
     var nearestDistance = double.infinity;
     for (var index = 0; index < offsets.length; index++) {
@@ -4060,63 +4179,77 @@ class _BalanceChartState extends State<BalanceChart> {
         nearest = index;
       }
     }
-    if (nearestDistance <= 30 * 30) setState(() => _selected = nearest);
+    if (nearestDistance <= 30 * 30) {
+      setState(() => _selected = nearest);
+    }
   }
 
   @override
-  Widget build(BuildContext context) => RepaintBoundary(
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final size = Size(constraints.maxWidth, constraints.maxHeight);
-            final offsets = _offsets(size);
-            final selected = _selected;
-            final point = selected == null ? null : _history[selected];
-            final offset = selected == null ? null : offsets[selected];
-            return Semantics(
-              label:
-                  'Динамика баланса. Нажмите на точку, чтобы увидеть значение',
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTapUp: (details) => _selectPoint(details, size),
-                child: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    Positioned.fill(
-                      child: CustomPaint(
-                        painter: _LinePainter(offsets, selected),
-                      ),
+  Widget build(BuildContext context) {
+    final history = _buildBalanceHistory(widget.transactions, widget.balance);
+    if (history.isEmpty) {
+      return const Center(
+        child: Text(
+          'Добавьте операции, чтобы увидеть динамику',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: _muted),
+        ),
+      );
+    }
+    final selected =
+        _selected != null && _selected! < history.length ? _selected : null;
+    return RepaintBoundary(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final size = Size(constraints.maxWidth, constraints.maxHeight);
+          final offsets = _offsets(size, history);
+          final point = selected == null ? null : history[selected];
+          final offset = selected == null ? null : offsets[selected];
+          return Semantics(
+            label: 'Динамика баланса. Нажмите на точку, чтобы увидеть значение',
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTapUp: (details) => _selectPoint(details, size, history),
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  Positioned.fill(
+                    child: CustomPaint(
+                      painter: _LinePainter(offsets, selected),
                     ),
-                    if (point != null && offset != null)
-                      Positioned(
-                        left: (offset.dx - 72)
-                            .clamp(4.0, math.max(4.0, size.width - 148))
-                            .toDouble(),
-                        top: math.max(0.0, offset.dy - 43),
-                        child: IgnorePointer(
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 9, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: _navy,
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(
-                                  color: _amber.withValues(alpha: .55)),
-                            ),
-                            child: Text(
-                              '${point.label} · ${_money(point.balance)} $_displayCurrency',
-                              style: const TextStyle(
-                                  fontSize: 11, fontWeight: FontWeight.w800),
-                            ),
+                  ),
+                  if (point != null && offset != null)
+                    Positioned(
+                      left: (offset.dx - 72)
+                          .clamp(4.0, math.max(4.0, size.width - 148))
+                          .toDouble(),
+                      top: math.max(0.0, offset.dy - 43),
+                      child: IgnorePointer(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 9, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: _navy,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                                color: _amber.withValues(alpha: .55)),
+                          ),
+                          child: Text(
+                            '${point.label} · ${_money(point.balance)} $_displayCurrency',
+                            style: const TextStyle(
+                                fontSize: 11, fontWeight: FontWeight.w800),
                           ),
                         ),
                       ),
-                  ],
-                ),
+                    ),
+                ],
               ),
-            );
-          },
-        ),
-      );
+            ),
+          );
+        },
+      ),
+    );
+  }
 }
 
 class _BalanceHistoryPoint {
@@ -4126,6 +4259,44 @@ class _BalanceHistoryPoint {
   final double y;
   final String label;
   final double balance;
+}
+
+List<_BalanceHistoryPoint> _buildBalanceHistory(
+    List<MoneyTransaction> transactions, double currentBalance) {
+  if (transactions.isEmpty) return const [];
+  final sorted = [...transactions]
+    ..sort((left, right) => _dateOf(left).compareTo(_dateOf(right)));
+  final retained =
+      sorted.length > 7 ? sorted.sublist(sorted.length - 7) : sorted;
+  final earlierDelta = sorted
+      .take(sorted.length - retained.length)
+      .where((item) => item.kind != TransactionKind.transfer)
+      .fold<double>(0, (sum, item) => sum + item.amount);
+  final visibleDelta = retained
+      .where((item) => item.kind != TransactionKind.transfer)
+      .fold<double>(0, (sum, item) => sum + item.amount);
+  var runningBalance = currentBalance - earlierDelta - visibleDelta;
+  final values = <({DateTime date, double balance})>[];
+  for (final transaction in retained) {
+    if (transaction.kind != TransactionKind.transfer) {
+      runningBalance += transaction.amount;
+    }
+    values.add((date: _dateOf(transaction), balance: runningBalance));
+  }
+  final minimum = values.map((item) => item.balance).reduce(math.min);
+  final maximum = values.map((item) => item.balance).reduce(math.max);
+  final spread = maximum - minimum;
+  return List.generate(values.length, (index) {
+    final value = values[index];
+    final normalized = spread == 0 ? .5 : (maximum - value.balance) / spread;
+    final x = values.length == 1 ? .5 : index / (values.length - 1);
+    return _BalanceHistoryPoint(
+      x,
+      .15 + normalized * .7,
+      _operationDateLabel(value.date),
+      value.balance,
+    );
+  });
 }
 
 class _LinePainter extends CustomPainter {
@@ -4637,25 +4808,42 @@ class _CategoryManagerSheetState extends State<CategoryManagerSheet> {
       );
 }
 
-class EditAccountBalanceSheet extends StatefulWidget {
-  const EditAccountBalanceSheet({super.key, required this.account});
-  final BudgetAccount account;
-  @override
-  State<EditAccountBalanceSheet> createState() =>
-      _EditAccountBalanceSheetState();
+class AccountEditResult {
+  const AccountEditResult(this.name, this.balance);
+
+  final String name;
+  final double balance;
 }
 
-class _EditAccountBalanceSheetState extends State<EditAccountBalanceSheet> {
+class EditAccountSheet extends StatefulWidget {
+  const EditAccountSheet({
+    super.key,
+    required this.account,
+    required this.existingNames,
+  });
+
+  final BudgetAccount account;
+  final List<String> existingNames;
+
+  @override
+  State<EditAccountSheet> createState() => _EditAccountSheetState();
+}
+
+class _EditAccountSheetState extends State<EditAccountSheet> {
+  late final TextEditingController name;
   late final TextEditingController balance;
+
   @override
   void initState() {
     super.initState();
+    name = TextEditingController(text: widget.account.name);
     balance = TextEditingController(
         text: widget.account.balance.toStringAsFixed(2).replaceAll('.', ','));
   }
 
   @override
   void dispose() {
+    name.dispose();
     balance.dispose();
     super.dispose();
   }
@@ -4678,21 +4866,29 @@ class _EditAccountBalanceSheetState extends State<EditAccountBalanceSheet> {
             const SizedBox(height: 20),
             Align(
                 alignment: Alignment.centerLeft,
-                child: Text(widget.account.name,
+                child: Text('Редактировать счёт',
                     style: const TextStyle(
                         fontSize: 21, fontWeight: FontWeight.w800))),
             const SizedBox(height: 6),
             const Align(
                 alignment: Alignment.centerLeft,
-                child: Text('Изменить текущий остаток',
+                child: Text('Название и текущий остаток',
                     style: TextStyle(color: _muted))),
             const SizedBox(height: 18),
             TextField(
-                controller: balance,
+                controller: name,
                 autofocus: true,
+                maxLength: 60,
+                textCapitalization: TextCapitalization.sentences,
+                textInputAction: TextInputAction.next,
+                decoration: const InputDecoration(labelText: 'Название')),
+            const SizedBox(height: 8),
+            TextField(
+                controller: balance,
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
                 inputFormatters: [_moneyInputFormatter],
+                textInputAction: TextInputAction.done,
                 decoration: InputDecoration(
                     labelText: 'Баланс', suffixText: _displayCurrency)),
             const SizedBox(height: 22),
@@ -4702,11 +4898,24 @@ class _EditAccountBalanceSheetState extends State<EditAccountBalanceSheet> {
                     onPressed: () {
                       final value =
                           double.tryParse(balance.text.replaceAll(',', '.'));
-                      if (value == null) {
+                      final updatedName = name.text.trim();
+                      if (updatedName.isEmpty) {
+                        _showNotice(context, 'Введите название счёта');
+                        return;
+                      }
+                      final duplicate = widget.existingNames.any((item) =>
+                          item != widget.account.name &&
+                          item.toLowerCase() == updatedName.toLowerCase());
+                      if (duplicate) {
+                        _showNotice(context, 'Счёт с таким названием уже есть');
+                        return;
+                      }
+                      if (value == null || !value.isFinite) {
                         _showNotice(context, 'Введите корректную сумму');
                         return;
                       }
-                      Navigator.pop(context, value);
+                      Navigator.pop(
+                          context, AccountEditResult(updatedName, value));
                     },
                     child: const Text('Сохранить'))),
           ]),
@@ -4715,8 +4924,10 @@ class _EditAccountBalanceSheetState extends State<EditAccountBalanceSheet> {
 }
 
 class AddAccountSheet extends StatefulWidget {
-  const AddAccountSheet({super.key, required this.dark});
+  const AddAccountSheet(
+      {super.key, required this.dark, required this.existingNames});
   final bool dark;
+  final List<String> existingNames;
   @override
   State<AddAccountSheet> createState() => _AddAccountSheetState();
 }
@@ -4757,6 +4968,7 @@ class _AddAccountSheetState extends State<AddAccountSheet> {
             TextField(
                 controller: name,
                 autofocus: true,
+                maxLength: 60,
                 decoration: const InputDecoration(
                     labelText: 'Название',
                     hintText: 'Например, карта для покупок')),
@@ -4794,6 +5006,17 @@ class _AddAccountSheetState extends State<AddAccountSheet> {
                         _showNotice(context, 'Введите название счёта');
                         return;
                       }
+                      final accountName = name.text.trim();
+                      if (accountName.length > 60) {
+                        _showNotice(context, 'Название счёта слишком длинное');
+                        return;
+                      }
+                      final duplicate = widget.existingNames.any((item) =>
+                          item.toLowerCase() == accountName.toLowerCase());
+                      if (duplicate) {
+                        _showNotice(context, 'Счёт с таким названием уже есть');
+                        return;
+                      }
                       final icon = type == 'Карта'
                           ? Icons.credit_card_rounded
                           : type == 'Кошелёк'
@@ -4804,7 +5027,7 @@ class _AddAccountSheetState extends State<AddAccountSheet> {
                       Navigator.pop(
                           context,
                           BudgetAccount(
-                              name.text.trim(), type, value, icon, _amber));
+                              accountName, type, value, icon, _amber));
                     },
                     style: FilledButton.styleFrom(
                         backgroundColor: _amber,
@@ -5184,7 +5407,7 @@ enum TransactionKind { expense, income, transfer }
 
 class BudgetAccount {
   BudgetAccount(this.name, this.type, this.balance, this.icon, this.color);
-  final String name;
+  String name;
   final String type;
   double balance;
   final IconData icon;
