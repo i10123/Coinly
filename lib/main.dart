@@ -94,6 +94,33 @@ const _englishStrings = <String, String>{
       'Start with a clean slate or load fictional sample data to explore Coinly.',
   'Посмотреть пример': 'View sample',
   'Начать с чистого листа': 'Start with a clean slate',
+  'Как начнём?': 'How would you like to start?',
+  'Можно пройти короткое знакомство с интерфейсом на примере. После него все тестовые данные будут удалены.':
+      'Take a short guided tour using sample data. All sample data will be removed afterwards.',
+  'Ознакомиться с интерфейсом': 'Explore the interface',
+  'Я уже использовал это приложение': 'I have used this app before',
+  'Русский интерфейс': 'Russian interface',
+  'Закрыть': 'Close',
+  'Всё понятно?': 'All clear?',
+  'Тестовые данные будут удалены, и можно будет начать вести свои финансы.':
+      'Sample data will be removed, and you can start tracking your own finances.',
+  'Пройти заново': 'Restart tour',
+  'Понятно': 'Got it',
+  'Здесь всегда видно, сколько денег на всех ваших счетах.':
+      'See the total amount across all your accounts here.',
+  'Ваши счета': 'Your accounts',
+  'Карточки показывают остаток на карте, наличных и накоплениях. Их можно добавлять и редактировать.':
+      'Cards show the balance of your bank card, cash, and savings. You can add and edit them.',
+  'Расход, доход и перевод добавляются отсюда всего за несколько шагов.':
+      'Add an expense, income, or transfer here in just a few steps.',
+  'Теперь попробуйте сами': 'Now try it yourself',
+  'Нажмите вкладку «Операции» внизу. Этот шаг нужно выполнить вручную.':
+      'Tap the Transactions tab below. This step must be completed manually.',
+  'Здесь хранятся все записи. Можно выбрать месяц, отфильтровать их и открыть любую для редактирования.':
+      'All entries are stored here. Choose a month, filter them, or open any entry to edit it.',
+  'Редактирование операции': 'Editing a transaction',
+  'Нажмите на любую запись, чтобы открыть её и при необходимости изменить или удалить. Новые операции добавляются через быстрые действия на главной.':
+      'Tap any entry to open it and edit or delete it if needed. Add new transactions using Quick actions on the Home tab.',
   'Сначала добавьте счёт': 'Add an account first',
   'Удалить операцию?': 'Delete transaction?',
   'Это действие нельзя отменить.': 'This action cannot be undone.',
@@ -139,6 +166,7 @@ const _englishStrings = <String, String>{
       'Changing the currency does not convert amounts you have already entered.',
   'Язык интерфейса': 'Interface language',
   'Выберите язык': 'Choose language',
+  'Язык': 'Language',
   'Русский': 'Russian',
   'Английский': 'English',
   'Настройки': 'Settings',
@@ -504,6 +532,7 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
   late AppData? _initialData;
   late List<CardDetails>? _initialCards;
   late AppLanguage _language;
+  var _startInterfaceTour = false;
 
   @override
   void initState() {
@@ -612,8 +641,8 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
     await widget.storage.saveLanguage(language);
   }
 
-  Future<void> _completeOnboarding(bool loadDemo) async {
-    final data = loadDemo ? AppData.demo() : AppData.empty();
+  Future<void> _completeOnboarding(bool startInterfaceTour) async {
+    final data = startInterfaceTour ? AppData.demo() : AppData.empty();
     final cards = <CardDetails>[];
     await Future.wait([
       widget.storage.saveData(data),
@@ -625,6 +654,7 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
         _initialData = data;
         _initialCards = cards;
         _onboardingCompleted = true;
+        _startInterfaceTour = startInterfaceTour;
       });
     }
   }
@@ -782,6 +812,7 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
                       onRemovePin: _removePin,
                       onEnableBiometrics: _enableBiometrics,
                       onSetBiometricsEnabled: _setBiometricsEnabled,
+                      startInterfaceTour: _startInterfaceTour,
                       language: _language,
                       onLanguageChanged: _setLanguage,
                     )
@@ -853,21 +884,13 @@ class OnboardingPage extends StatefulWidget {
 }
 
 class _OnboardingPageState extends State<OnboardingPage> {
-  final _controller = PageController();
-  var _page = 0;
   var _working = false;
 
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  Future<void> _finish(bool loadDemo) async {
+  Future<void> _finish(bool startInterfaceTour) async {
     if (_working) return;
     setState(() => _working = true);
     try {
-      await widget.onComplete(loadDemo);
+      await widget.onComplete(startInterfaceTour);
     } catch (_) {
       if (mounted) {
         setState(() => _working = false);
@@ -879,21 +902,9 @@ class _OnboardingPageState extends State<OnboardingPage> {
   Future<void> _selectLanguage() async {
     final selected = await showDialog<AppLanguage>(
       context: context,
-      builder: (context) => SimpleDialog(
-        title: const Text('Выберите язык'),
-        children: AppLanguage.values
-            .map(
-              (language) => SimpleDialogOption(
-                onPressed: () => Navigator.pop(context, language),
-                child: Row(children: [
-                  Text(language.label),
-                  const Spacer(),
-                  if (language == widget.language)
-                    const Icon(Icons.check_rounded, color: _amber),
-                ]),
-              ),
-            )
-            .toList(),
+      builder: (context) => _LanguagePickerDialog(
+        title: 'Выберите язык',
+        selected: widget.language,
       ),
     );
     if (selected == null || selected == widget.language) return;
@@ -910,60 +921,46 @@ class _OnboardingPageState extends State<OnboardingPage> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    TextButton.icon(
-                      onPressed: _working ? null : _selectLanguage,
-                      icon: const Icon(Icons.language_rounded, size: 18),
-                      label: Text(widget.language.label),
+                    _OnboardingLanguageButton(
+                      language: widget.language,
+                      enabled: !_working,
+                      onTap: _selectLanguage,
                     ),
-                    _page < 2
-                        ? TextButton(
-                            onPressed: _working ? null : () => _finish(false),
-                            child: const Text('Пропустить'),
-                          )
-                        : const SizedBox(width: 72, height: 40),
+                    const SizedBox(width: 72, height: 40),
                   ],
                 ),
                 Expanded(
-                  child: PageView(
-                    controller: _controller,
-                    onPageChanged: (page) => setState(() => _page = page),
-                    children: const [
-                      _OnboardingSlide(
-                        icon: Icons.account_balance_wallet_rounded,
-                        color: _amber,
-                        title: 'Ваши деньги — под контролем',
-                        description:
-                            'Добавляйте счета, фиксируйте расходы и всегда знайте свой общий баланс.',
-                      ),
-                      _OnboardingSlide(
-                        icon: Icons.auto_graph_rounded,
-                        color: _mint,
-                        title: 'Понятная аналитика',
-                        description:
-                            'Доходы, расходы и динамика баланса собираются автоматически из ваших операций.',
-                      ),
-                      _OnboardingSlide(
-                        icon: Icons.insights_rounded,
-                        color: Color(0xFFC4A5FF),
-                        title: 'Начнём?',
-                        description:
-                            'Можно начать с чистого листа или загрузить пример с вымышленными данными, чтобы посмотреть возможности Coinly.',
-                      ),
-                    ],
-                  ),
-                ),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: List.generate(
-                    3,
-                    (index) => AnimatedContainer(
-                      duration: _quickMotion,
-                      margin: const EdgeInsets.symmetric(horizontal: 4),
-                      width: index == _page ? 22 : 7,
-                      height: 7,
-                      decoration: BoxDecoration(
-                        color: index == _page ? _amber : _muted,
-                        borderRadius: BorderRadius.circular(20),
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 360),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 82,
+                            height: 82,
+                            decoration: BoxDecoration(
+                              color: _amber.withValues(alpha: .14),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(Icons.explore_rounded,
+                                size: 42, color: _amber),
+                          ),
+                          const SizedBox(height: 26),
+                          const Text('Как начнём?',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                  fontSize: 28,
+                                  height: 1.05,
+                                  fontWeight: FontWeight.w800)),
+                          const SizedBox(height: 12),
+                          const Text(
+                            'Можно пройти короткое знакомство с интерфейсом на примере. После него все тестовые данные будут удалены.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                                color: _muted, fontSize: 14, height: 1.45),
+                          ),
+                        ],
                       ),
                     ),
                   ),
@@ -974,24 +971,13 @@ class _OnboardingPageState extends State<OnboardingPage> {
                     height: 52,
                     child: Center(child: CircularProgressIndicator()),
                   )
-                else if (_page < 2)
-                  SizedBox(
-                    width: double.infinity,
-                    child: FilledButton(
-                      onPressed: () => _controller.nextPage(
-                        duration: _quickMotion,
-                        curve: _motionCurve,
-                      ),
-                      child: const Text('Далее'),
-                    ),
-                  )
                 else ...[
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton.icon(
                       onPressed: () => _finish(true),
-                      icon: const Icon(Icons.visibility_rounded),
-                      label: const Text('Посмотреть пример'),
+                      icon: const Icon(Icons.explore_rounded),
+                      label: const Text('Ознакомиться с интерфейсом'),
                     ),
                   ),
                   const SizedBox(height: 10),
@@ -999,7 +985,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
                     width: double.infinity,
                     child: OutlinedButton(
                       onPressed: () => _finish(false),
-                      child: const Text('Начать с чистого листа'),
+                      child: const Text('Я уже использовал это приложение'),
                     ),
                   ),
                 ],
@@ -1010,55 +996,238 @@ class _OnboardingPageState extends State<OnboardingPage> {
       );
 }
 
-class _OnboardingSlide extends StatelessWidget {
-  const _OnboardingSlide({
-    required this.icon,
-    required this.color,
-    required this.title,
-    required this.description,
+class _OnboardingLanguageButton extends StatelessWidget {
+  const _OnboardingLanguageButton({
+    required this.language,
+    required this.enabled,
+    required this.onTap,
   });
 
-  final IconData icon;
-  final Color color;
-  final String title;
-  final String description;
+  final AppLanguage language;
+  final bool enabled;
+  final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 360),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                width: 108,
-                height: 108,
-                decoration: BoxDecoration(
-                  color: color.withValues(alpha: .14),
-                  shape: BoxShape.circle,
-                  border: Border.all(color: color.withValues(alpha: .35)),
+  Widget build(BuildContext context) {
+    final isRussian = language == AppLanguage.russian;
+    final accent = isRussian ? _amber : const Color(0xFFC7A7FF);
+    return Opacity(
+      opacity: enabled ? 1 : .45,
+      child: Material(
+        color: _surfaceHigh.withValues(alpha: .72),
+        borderRadius: BorderRadius.circular(18),
+        child: InkWell(
+          onTap: enabled ? onTap : null,
+          borderRadius: BorderRadius.circular(18),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(6, 6, 10, 6),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: Colors.white.withValues(alpha: .08)),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 32,
+                  height: 32,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: accent.withValues(alpha: .16),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Text(
+                    isRussian ? 'RU' : 'EN',
+                    style: TextStyle(
+                      color: accent,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: .35,
+                    ),
+                  ),
                 ),
-                child: Icon(icon, size: 52, color: color),
+                const SizedBox(width: 8),
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Язык',
+                      style: TextStyle(fontSize: 10, color: _muted, height: 1),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      language.label,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        height: 1,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LanguagePickerDialog extends StatelessWidget {
+  const _LanguagePickerDialog({
+    required this.title,
+    required this.selected,
+  });
+
+  final String title;
+  final AppLanguage selected;
+
+  @override
+  Widget build(BuildContext context) => Dialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 24),
+        backgroundColor: _surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 42,
+                    height: 42,
+                    decoration: const BoxDecoration(
+                      color: Color(0x24F2B84B),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.language_rounded, color: _amber),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: _tr('Закрыть'),
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close_rounded, color: _muted),
+                  ),
+                ],
               ),
-              const SizedBox(height: 34),
-              Text(
-                title,
-                textAlign: TextAlign.center,
-                style: Theme.of(context)
-                    .textTheme
-                    .headlineMedium
-                    ?.copyWith(fontWeight: FontWeight.w800),
-              ),
-              const SizedBox(height: 14),
-              Text(
-                description,
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: _muted, height: 1.45),
+              const SizedBox(height: 18),
+              ...AppLanguage.values.map(
+                (language) => Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: _LanguageChoice(
+                    language: language,
+                    selected: language == selected,
+                    onTap: () => Navigator.pop(context, language),
+                  ),
+                ),
               ),
             ],
           ),
         ),
       );
+}
+
+class _LanguageChoice extends StatelessWidget {
+  const _LanguageChoice({
+    required this.language,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final AppLanguage language;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final isRussian = language == AppLanguage.russian;
+    final accent = isRussian ? _amber : const Color(0xFFC7A7FF);
+    return Material(
+      color: selected ? accent.withValues(alpha: .13) : _surfaceHigh,
+      borderRadius: BorderRadius.circular(18),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(18),
+        child: AnimatedContainer(
+          duration: _quickMotion,
+          padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+              color: selected ? accent : Colors.white.withValues(alpha: .08),
+              width: selected ? 1.25 : 1,
+            ),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: .14),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Text(
+                  isRussian ? 'RU' : 'EN',
+                  style: TextStyle(
+                    color: accent,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 13,
+                    letterSpacing: .4,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 13),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      language.label,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      isRussian ? 'Русский интерфейс' : 'English interface',
+                      style: const TextStyle(fontSize: 12, color: _muted),
+                    ),
+                  ],
+                ),
+              ),
+              AnimatedContainer(
+                duration: _quickMotion,
+                width: 24,
+                height: 24,
+                decoration: BoxDecoration(
+                  color: selected ? accent : Colors.transparent,
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: selected ? accent : _muted.withValues(alpha: .6),
+                  ),
+                ),
+                child: selected
+                    ? const Icon(Icons.check_rounded, size: 16, color: _navy)
+                    : null,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class CoinlyHome extends StatefulWidget {
@@ -1076,6 +1245,7 @@ class CoinlyHome extends StatefulWidget {
     required this.onRemovePin,
     required this.onEnableBiometrics,
     required this.onSetBiometricsEnabled,
+    required this.startInterfaceTour,
     required this.language,
     required this.onLanguageChanged,
   });
@@ -1091,6 +1261,7 @@ class CoinlyHome extends StatefulWidget {
   final Future<void> Function() onRemovePin;
   final Future<bool> Function() onEnableBiometrics;
   final Future<void> Function(bool enabled) onSetBiometricsEnabled;
+  final bool startInterfaceTour;
   final AppLanguage language;
   final Future<void> Function(AppLanguage language) onLanguageChanged;
 
@@ -1108,7 +1279,12 @@ class _CoinlyHomeState extends State<CoinlyHome> {
   late List<CardDetails> _cards;
   late List<SavingsGoal> _goals;
   late String _currency;
+  final _dashboardScrollController = ScrollController();
   Future<void> _saveQueue = Future.value();
+  var _tourActive = false;
+  var _tourCompleting = false;
+  var _tourStep = 0;
+  var _tourStepReady = false;
 
   @override
   void initState() {
@@ -1124,11 +1300,21 @@ class _CoinlyHomeState extends State<CoinlyHome> {
     _currency = data.currency;
     _displayCurrency = _currency;
     _cards = widget.initialCards ?? [];
+    _tourActive = widget.startInterfaceTour;
     if (widget.initialData == null ||
         widget.initialCards == null ||
         addedBaseCategories) {
       _persist();
     }
+    if (_tourActive) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _activateTourStep(0));
+    }
+  }
+
+  @override
+  void dispose() {
+    _dashboardScrollController.dispose();
+    super.dispose();
   }
 
   bool _addMissingBaseCategories(List<FinanceCategory> categories) {
@@ -1485,6 +1671,109 @@ class _CoinlyHomeState extends State<CoinlyHome> {
     await _persist();
   }
 
+  void _activateTourStep(int step) {
+    if (!mounted) return;
+    setState(() {
+      _tourStep = step;
+      _tourStepReady = false;
+    });
+    _scrollDashboardForTour(step);
+    if (step == 3) return;
+    Future<void>.delayed(const Duration(seconds: 2), () {
+      if (mounted && _tourActive && _tourStep == step) {
+        setState(() => _tourStepReady = true);
+      }
+    });
+  }
+
+  void _scrollDashboardForTour(int step) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_tourActive || !_dashboardScrollController.hasClients) {
+        return;
+      }
+      final maximum = _dashboardScrollController.position.maxScrollExtent;
+      final target = step == 2 ? math.min(280.0, maximum) : 0.0;
+      _dashboardScrollController.animateTo(
+        target,
+        duration: const Duration(milliseconds: 360),
+        curve: _motionCurve,
+      );
+    });
+  }
+
+  void _advanceTour() {
+    if (!_tourStepReady || _tourCompleting) return;
+    switch (_tourStep) {
+      case 0:
+      case 1:
+      case 2:
+      case 4:
+        _activateTourStep(_tourStep + 1);
+        return;
+      case 5:
+        _completeInterfaceTour();
+        return;
+    }
+  }
+
+  void _changeTab(int value) {
+    if (!_tourActive) {
+      setState(() => _tab = value);
+      return;
+    }
+    if (_tourStep == 3 && value == 1) {
+      setState(() => _tab = value);
+      _activateTourStep(4);
+    }
+  }
+
+  Future<void> _completeInterfaceTour() async {
+    if (_tourCompleting) return;
+    setState(() => _tourCompleting = true);
+    final understood = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('Всё понятно?'),
+        content: const Text(
+            'Тестовые данные будут удалены, и можно будет начать вести свои финансы.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Пройти заново'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Понятно'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (understood != true) {
+      setState(() {
+        _tab = 0;
+        _tourCompleting = false;
+      });
+      _activateTourStep(0);
+      return;
+    }
+
+    final empty = AppData.empty(currency: _currency);
+    setState(() {
+      _transactions = empty.transactions;
+      _accounts = empty.accounts;
+      _categories = empty.categories;
+      _goals = empty.goals;
+      _cards = [];
+      _tab = 0;
+      _tourActive = false;
+      _tourCompleting = false;
+      _syncBalance();
+    });
+    await _enqueueStorageWrite(() => widget.storage.clearFinancialData(empty));
+  }
+
   @override
   Widget build(BuildContext context) {
     final pages = [
@@ -1493,11 +1782,12 @@ class _CoinlyHomeState extends State<CoinlyHome> {
         transactions: _transactions,
         accounts: _accounts,
         goals: _goals,
+        scrollController: _dashboardScrollController,
         onAdd: _addTransaction,
         onAddGoal: _addGoal,
         onEditGoal: _editGoal,
-        onShowAll: () => setState(() => _tab = 1),
-        onShowAccounts: () => setState(() => _tab = 2),
+        onShowAll: () => _changeTab(1),
+        onShowAccounts: () => _changeTab(2),
         onSettings: _openSettings,
       ),
       TransactionsPage(
@@ -1517,9 +1807,10 @@ class _CoinlyHomeState extends State<CoinlyHome> {
       CategoriesPage(categories: _categories, onChanged: _persist),
       AnalyticsPage(transactions: _transactions, balance: _balance),
     ];
-    return Scaffold(
-      body: SafeArea(
-        child: AnimatedSwitcher(
+    return Stack(children: [
+      Scaffold(
+        body: SafeArea(
+          child: AnimatedSwitcher(
           duration: const Duration(milliseconds: 160),
           switchInCurve: _motionCurve,
           switchOutCurve: Curves.easeIn,
@@ -1537,11 +1828,24 @@ class _CoinlyHomeState extends State<CoinlyHome> {
           child: KeyedSubtree(key: ValueKey(_tab), child: pages[_tab]),
         ),
       ),
-      bottomNavigationBar: _NavBar(
-        index: _tab,
-        onChanged: (value) => setState(() => _tab = value),
+        bottomNavigationBar: _NavBar(
+          index: _tab,
+          onChanged: _changeTab,
+        ),
       ),
-    );
+      if (_tourActive && !_tourCompleting)
+        Positioned(
+          left: 0,
+          right: 0,
+          top: 0,
+          bottom: 78,
+          child: _InterfaceTourOverlay(
+            step: _tourStep,
+            ready: _tourStepReady,
+            onAdvance: _advanceTour,
+          ),
+        ),
+    ]);
   }
 
   Future<void> _openSettings() async {
@@ -1679,18 +1983,25 @@ class _CoinlyHomeState extends State<CoinlyHome> {
 
   String _transactionsAsCsv(List<MoneyTransaction> transactions) {
     String escape(String value) => '"${value.replaceAll('"', '""')}"';
+    String safeText(String value) {
+      // Spreadsheet apps may execute a cell beginning with a formula marker.
+      // The apostrophe keeps the exported value as plain text in CSV readers.
+      final isFormula = RegExp(r'^[\t\r\n ]*[=+\-@]').hasMatch(value);
+      return escape(isFormula ? "'$value" : value);
+    }
+
     final rows = <String>[
       'Дата,Тип,Категория,Сумма,Валюта,Счёт,Счёт-источник,Комментарий',
       ...transactions.map((transaction) => [
-            _transactionDate(transaction),
-            _transactionType(transaction),
-            transaction.title,
-            transaction.amount.toStringAsFixed(2),
-            _currency,
-            transaction.account ?? '',
-            transaction.fromAccount ?? '',
-            transaction.subtitle,
-          ].map(escape).join(',')),
+            escape(_transactionDate(transaction)),
+            escape(_transactionType(transaction)),
+            safeText(transaction.title),
+            escape(transaction.amount.toStringAsFixed(2)),
+            escape(_currency),
+            safeText(transaction.account ?? ''),
+            safeText(transaction.fromAccount ?? ''),
+            safeText(transaction.subtitle),
+          ].join(',')),
     ];
     return '${rows.join('\n')}\n';
   }
@@ -2081,21 +2392,9 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _selectLanguage() async {
     final selected = await showDialog<AppLanguage>(
       context: context,
-      builder: (context) => SimpleDialog(
-        title: const Text('Язык интерфейса'),
-        children: AppLanguage.values
-            .map(
-              (language) => SimpleDialogOption(
-                onPressed: () => Navigator.pop(context, language),
-                child: Row(children: [
-                  Text(language.label),
-                  const Spacer(),
-                  if (language == _language)
-                    const Icon(Icons.check_rounded, color: _amber),
-                ]),
-              ),
-            )
-            .toList(),
+      builder: (context) => _LanguagePickerDialog(
+        title: 'Язык интерфейса',
+        selected: _language,
       ),
     );
     if (selected == null || selected == _language) return;
@@ -2787,15 +3086,176 @@ class PageFrame extends StatelessWidget {
   const PageFrame({
     super.key,
     required this.child,
+    this.controller,
     this.padding = const EdgeInsets.fromLTRB(20, 12, 20, 110),
   });
   final Widget child;
+  final ScrollController? controller;
   final EdgeInsets padding;
   @override
   Widget build(BuildContext context) => ScrollConfiguration(
         behavior: ScrollConfiguration.of(context).copyWith(overscroll: false),
-        child: SingleChildScrollView(padding: padding, child: child),
+        child: SingleChildScrollView(
+          controller: controller,
+          padding: padding,
+          child: child,
+        ),
       );
+}
+
+class _InterfaceTourOverlay extends StatelessWidget {
+  const _InterfaceTourOverlay({
+    required this.step,
+    required this.ready,
+    required this.onAdvance,
+  });
+
+  final int step;
+  final bool ready;
+  final VoidCallback onAdvance;
+
+  ({String title, String text, bool arrowDown}) get _content => switch (step) {
+        0 => (
+            title: 'Общий баланс',
+            text: 'Здесь всегда видно, сколько денег на всех ваших счетах.',
+            arrowDown: false,
+          ),
+        1 => (
+            title: 'Ваши счета',
+            text:
+                'Карточки показывают остаток на карте, наличных и накоплениях. Их можно добавлять и редактировать.',
+            arrowDown: false,
+          ),
+        2 => (
+            title: 'Быстрые действия',
+            text:
+                'Расход, доход и перевод добавляются отсюда всего за несколько шагов.',
+            arrowDown: false,
+          ),
+        3 => (
+            title: 'Теперь попробуйте сами',
+            text:
+                'Нажмите вкладку «Операции» внизу. Этот шаг нужно выполнить вручную.',
+            arrowDown: true,
+          ),
+        4 => (
+            title: 'История операций',
+            text:
+                'Здесь хранятся все записи. Можно выбрать месяц, отфильтровать их и открыть любую для редактирования.',
+            arrowDown: false,
+          ),
+        _ => (
+            title: 'Редактирование операции',
+            text:
+                'Нажмите на любую запись, чтобы открыть её и при необходимости изменить или удалить. Новые операции добавляются через быстрые действия на главной.',
+            arrowDown: false,
+          ),
+      };
+
+  double _messageTop(double height) => switch (step) {
+        0 => 324,
+        1 => 494,
+        2 => math.min(500, height - 196).toDouble(),
+        3 => height - 224,
+        4 => 382,
+        _ => 510,
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final content = _content;
+    final needsTab = step == 3;
+    return Material(
+      color: Colors.transparent,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: needsTab || !ready ? null : onAdvance,
+        child: ColoredBox(
+          color: Colors.black.withValues(alpha: .48),
+          child: SafeArea(
+            bottom: false,
+            child: LayoutBuilder(
+              builder: (context, constraints) => Stack(
+                children: [
+                  Positioned(
+                    left: 24,
+                    right: 24,
+                    top: _messageTop(constraints.maxHeight),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (!content.arrowDown)
+                          const Padding(
+                            padding: EdgeInsets.only(bottom: 5),
+                            child: Icon(Icons.arrow_upward_rounded,
+                                color: _amber, size: 34),
+                          ),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.fromLTRB(18, 16, 18, 14),
+                          decoration: BoxDecoration(
+                            color: _surfaceHigh,
+                            borderRadius: BorderRadius.circular(22),
+                            border: Border.all(
+                                color: _amber.withValues(alpha: .55)),
+                            boxShadow: const [
+                              BoxShadow(color: Colors.black54, blurRadius: 20)
+                            ],
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(children: [
+                                Container(
+                                  width: 28,
+                                  height: 28,
+                                  decoration: BoxDecoration(
+                                    color: _amber.withValues(alpha: .16),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: Text('${step < 3 ? step + 1 : step}/5',
+                                      textAlign: TextAlign.center,
+                                      style: const TextStyle(
+                                          color: _amber,
+                                          fontSize: 11,
+                                          height: 2.2,
+                                          fontWeight: FontWeight.w800)),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(content.title,
+                                      style: const TextStyle(
+                                          fontSize: 17,
+                                          fontWeight: FontWeight.w800)),
+                                ),
+                              ]),
+                              const SizedBox(height: 10),
+                              Text(content.text,
+                                  style: const TextStyle(
+                                      color: _ink, fontSize: 13, height: 1.35)),
+                            ],
+                          ),
+                        ),
+                        if (content.arrowDown)
+                          const Padding(
+                            padding: EdgeInsets.only(top: 5),
+                            child: Align(
+                              alignment: Alignment(-.42, 0),
+                              child: Icon(Icons.arrow_downward_rounded,
+                                  color: _amber, size: 34),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class AppPageRoute<T> extends PageRouteBuilder<T> {
@@ -2826,6 +3286,7 @@ class DashboardPage extends StatelessWidget {
     required this.transactions,
     required this.accounts,
     required this.goals,
+    required this.scrollController,
     required this.onAdd,
     required this.onAddGoal,
     required this.onEditGoal,
@@ -2837,6 +3298,7 @@ class DashboardPage extends StatelessWidget {
   final List<MoneyTransaction> transactions;
   final List<BudgetAccount> accounts;
   final List<SavingsGoal> goals;
+  final ScrollController scrollController;
   final ValueChanged<TransactionKind> onAdd;
   final VoidCallback onAddGoal;
   final ValueChanged<SavingsGoal> onEditGoal;
@@ -2856,6 +3318,7 @@ class DashboardPage extends StatelessWidget {
         .where((item) => item.kind == TransactionKind.expense)
         .fold<double>(0, (sum, item) => sum + item.amount.abs());
     return PageFrame(
+      controller: scrollController,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
