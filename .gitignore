@@ -44,5 +44,15 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
+# Credentials and signing material must never be committed.
+.env
+.env.*
+!.env.example
+/android/key.properties
+*.jks
+*.keystore
+/android/app/google-services.json
+/ios/Runner/GoogleService-Info.plist
+
 # Widget Preview related
 .widget_preview/

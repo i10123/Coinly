@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 
@@ -12,6 +13,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final storage = AppStorage();
+  await storage.resetPinForFourDigitMigration();
   final data = await storage.loadData();
   final cards = await storage.loadCards();
   final hasPin = await storage.hasPin();
@@ -33,6 +35,12 @@ const _surface = Color(0xFF1B202C);
 const _surfaceHigh = Color(0xFF252C39);
 const _ink = Color(0xFFF7F3EC);
 const _muted = Color(0xFF9DA5B4);
+final _moneyInputFormatter = TextInputFormatter.withFunction(
+  (oldValue, newValue) =>
+      RegExp(r'^\d{0,12}([,.]\d{0,2})?$').hasMatch(newValue.text)
+          ? newValue
+          : oldValue,
+);
 
 class CoinlyApp extends StatefulWidget {
   const CoinlyApp({
@@ -56,6 +64,7 @@ class CoinlyApp extends StatefulWidget {
 
 class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
   bool _dark = true;
+  bool _showLaunchSplash = true;
   late bool _hasPin;
   late bool _unlocked;
   late bool _biometricsEnabled;
@@ -65,8 +74,13 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _hasPin = widget.hasPin;
+    // PIN protection is opt-in. Until it is enabled in Settings, the local
+    // budget opens normally; after that every launch requires authentication.
     _unlocked = !_hasPin;
     _biometricsEnabled = widget.biometricsEnabled && _hasPin;
+    Future<void>.delayed(const Duration(milliseconds: 500), () {
+      if (mounted) setState(() => _showLaunchSplash = false);
+    });
   }
 
   @override
@@ -77,7 +91,11 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (_hasPin && state == AppLifecycleState.paused && mounted) {
+    if (_hasPin &&
+        (state == AppLifecycleState.inactive ||
+            state == AppLifecycleState.paused ||
+            state == AppLifecycleState.detached) &&
+        mounted) {
       setState(() => _unlocked = false);
     }
   }
@@ -99,6 +117,19 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
   }
 
   Future<bool> _verifyPin(String pin) => widget.storage.verifyPin(pin);
+
+  Future<Duration?> _pinLockRemaining() => widget.storage.pinLockRemaining();
+
+  Future<void> _removePin() async {
+    await widget.storage.clearPin();
+    if (mounted) {
+      setState(() {
+        _hasPin = false;
+        _biometricsEnabled = false;
+        _unlocked = true;
+      });
+    }
+  }
 
   Future<bool> _unlockWithBiometrics() async {
     final auth = LocalAuthentication();
@@ -241,29 +272,61 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
           modalBackgroundColor: Colors.transparent,
         ),
       ),
-      home: _unlocked
-          ? CoinlyHome(
-              dark: _dark,
-              storage: widget.storage,
-              initialData: widget.initialData,
-              initialCards: widget.initialCards,
-              onThemeChanged: () => setState(() => _dark = !_dark),
-              hasPin: _hasPin,
-              biometricsEnabled: _biometricsEnabled,
-              onSetPin: _setPin,
-              onVerifyPin: _verifyPin,
-              onEnableBiometrics: _enableBiometrics,
-              onSetBiometricsEnabled: _setBiometricsEnabled,
-            )
-          : PinGate(
-              hasPin: _hasPin,
-              onSetPin: _setPin,
-              onUnlock: _unlock,
-              biometricsEnabled: _biometricsEnabled,
-              onBiometricUnlock: _unlockWithBiometrics,
-            ),
+      home: _showLaunchSplash
+          ? const LaunchSplashPage()
+          : _unlocked
+              ? CoinlyHome(
+                  dark: _dark,
+                  storage: widget.storage,
+                  initialData: widget.initialData,
+                  initialCards: widget.initialCards,
+                  onThemeChanged: () => setState(() => _dark = !_dark),
+                  hasPin: _hasPin,
+                  biometricsEnabled: _biometricsEnabled,
+                  onSetPin: _setPin,
+                  onVerifyPin: _verifyPin,
+                  onRemovePin: _removePin,
+                  onEnableBiometrics: _enableBiometrics,
+                  onSetBiometricsEnabled: _setBiometricsEnabled,
+                )
+              : PinGate(
+                  hasPin: _hasPin,
+                  onSetPin: _setPin,
+                  onUnlock: _unlock,
+                  biometricsEnabled: _biometricsEnabled,
+                  onBiometricUnlock: _unlockWithBiometrics,
+                  onLockRemaining: _pinLockRemaining,
+                ),
     );
   }
+}
+
+class LaunchSplashPage extends StatelessWidget {
+  const LaunchSplashPage({super.key});
+
+  @override
+  Widget build(BuildContext context) => const Scaffold(
+        body: Center(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            ClipRRect(
+              borderRadius: BorderRadius.all(Radius.circular(36)),
+              child: Image(
+                image: AssetImage('assets/images/coinly_logo.jpg'),
+                width: 156,
+                height: 156,
+                fit: BoxFit.cover,
+              ),
+            ),
+            SizedBox(height: 18),
+            Text('Coinly',
+                style: TextStyle(
+                    fontFamily: 'serif',
+                    fontSize: 27,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: -0.7)),
+          ]),
+        ),
+      );
 }
 
 class CoinlyHome extends StatefulWidget {
@@ -278,6 +341,7 @@ class CoinlyHome extends StatefulWidget {
     required this.biometricsEnabled,
     required this.onSetPin,
     required this.onVerifyPin,
+    required this.onRemovePin,
     required this.onEnableBiometrics,
     required this.onSetBiometricsEnabled,
   });
@@ -290,6 +354,7 @@ class CoinlyHome extends StatefulWidget {
   final bool biometricsEnabled;
   final Future<void> Function(String pin) onSetPin;
   final Future<bool> Function(String pin) onVerifyPin;
+  final Future<void> Function() onRemovePin;
   final Future<bool> Function() onEnableBiometrics;
   final Future<void> Function(bool enabled) onSetBiometricsEnabled;
 
@@ -412,8 +477,7 @@ class _CoinlyHomeState extends State<CoinlyHome> {
       card.title = updated.title;
       card.bank = updated.bank;
       card.currency = updated.currency;
-      card.number = updated.number;
-      card.cvv = updated.cvv;
+      card.lastFour = updated.lastFour;
       card.expiry = updated.expiry;
     });
     await _persist();
@@ -481,6 +545,7 @@ class _CoinlyHomeState extends State<CoinlyHome> {
         biometricsEnabled: widget.biometricsEnabled,
         onSetPin: widget.onSetPin,
         onVerifyPin: widget.onVerifyPin,
+        onRemovePin: widget.onRemovePin,
         onEnableBiometrics: widget.onEnableBiometrics,
         onSetBiometricsEnabled: widget.onSetBiometricsEnabled,
       ),
@@ -496,6 +561,7 @@ class SettingsPage extends StatefulWidget {
     required this.biometricsEnabled,
     required this.onSetPin,
     required this.onVerifyPin,
+    required this.onRemovePin,
     required this.onEnableBiometrics,
     required this.onSetBiometricsEnabled,
   });
@@ -504,6 +570,7 @@ class SettingsPage extends StatefulWidget {
   final bool biometricsEnabled;
   final Future<void> Function(String pin) onSetPin;
   final Future<bool> Function(String pin) onVerifyPin;
+  final Future<void> Function() onRemovePin;
   final Future<bool> Function() onEnableBiometrics;
   final Future<void> Function(bool enabled) onSetBiometricsEnabled;
 
@@ -552,6 +619,23 @@ class _SettingsPageState extends State<SettingsPage> {
       ),
     );
     if (changed == true && mounted) setState(() => _hasPin = true);
+  }
+
+  Future<void> _removePin() async {
+    final removed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => PinRemovalPage(
+          onVerifyPin: widget.onVerifyPin,
+          onRemovePin: widget.onRemovePin,
+        ),
+      ),
+    );
+    if (removed == true && mounted) {
+      setState(() {
+        _hasPin = false;
+        _biometricsEnabled = false;
+      });
+    }
   }
 
   Future<void> _toggleBiometrics(bool value) async {
@@ -606,10 +690,20 @@ class _SettingsPageState extends State<SettingsPage> {
                   color: _amber,
                   title: _hasPin ? 'Изменить PIN-код' : 'Установить PIN-код',
                   subtitle: _hasPin
-                      ? 'Код состоит из 4–6 цифр'
+                      ? 'Код состоит из 4 цифр'
                       : 'Защита входа не включена',
                   onTap: _managePin,
                 ),
+                if (_hasPin) ...[
+                  const SizedBox(height: 10),
+                  _SettingsRow(
+                    icon: Icons.lock_open_rounded,
+                    color: _coral,
+                    title: 'Отключить PIN-код',
+                    subtitle: 'Потребуется текущий PIN-код',
+                    onTap: _removePin,
+                  ),
+                ],
                 const SizedBox(height: 10),
                 _Card(
                   padding:
@@ -749,9 +843,10 @@ class _PinChangePageState extends State<PinChangePage> {
   }
 
   Future<void> _submit() async {
+    if (_working) return;
     final pin = _controller.text.trim();
-    if (!RegExp(r'^\\d{4,6}$').hasMatch(pin)) {
-      setState(() => _error = 'PIN должен содержать от 4 до 6 цифр');
+    if (!RegExp(r'^\d{4}$').hasMatch(pin)) {
+      setState(() => _error = 'PIN должен содержать 4 цифры');
       return;
     }
     if (_step == 0) {
@@ -809,7 +904,7 @@ class _PinChangePageState extends State<PinChangePage> {
     };
     final subtitle = switch (_step) {
       0 => 'Это подтвердит изменение кода',
-      1 => 'От 4 до 6 цифр',
+      1 => 'Ровно 4 цифры',
       _ => 'Введите PIN ещё раз',
     };
     return Scaffold(
@@ -833,6 +928,7 @@ class _PinChangePageState extends State<PinChangePage> {
                   decoration: BoxDecoration(
                     color: _amber.withValues(alpha: .16),
                     shape: BoxShape.circle,
+                    border: Border.all(color: _amber.withValues(alpha: .08)),
                   ),
                   child: const Icon(Icons.password_rounded,
                       color: _amber, size: 30),
@@ -846,19 +942,15 @@ class _PinChangePageState extends State<PinChangePage> {
                     style: const TextStyle(color: _muted),
                     textAlign: TextAlign.center),
                 const SizedBox(height: 28),
-                TextField(
+                PinCellsField(
                   controller: _controller,
-                  autofocus: true,
-                  maxLength: 6,
-                  obscureText: true,
-                  obscuringCharacter: '•',
-                  keyboardType: TextInputType.number,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 24, letterSpacing: 10),
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                   onSubmitted: (_) => _submit(),
-                  decoration:
-                      InputDecoration(counterText: '', errorText: _error),
+                  onChanged: (pin) {
+                    if (_error != null) setState(() => _error = null);
+                    if (pin.length == 4) _submit();
+                  },
+                  errorText: _error,
+                  enabled: !_working,
                 ),
                 const SizedBox(height: 16),
                 SizedBox(
@@ -874,6 +966,288 @@ class _PinChangePageState extends State<PinChangePage> {
         ),
       ),
     );
+  }
+}
+
+class PinRemovalPage extends StatefulWidget {
+  const PinRemovalPage({
+    super.key,
+    required this.onVerifyPin,
+    required this.onRemovePin,
+  });
+
+  final Future<bool> Function(String pin) onVerifyPin;
+  final Future<void> Function() onRemovePin;
+
+  @override
+  State<PinRemovalPage> createState() => _PinRemovalPageState();
+}
+
+class _PinRemovalPageState extends State<PinRemovalPage> {
+  final _controller = TextEditingController();
+  String? _error;
+  bool _working = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_working) return;
+    final pin = _controller.text.trim();
+    if (!RegExp(r'^\d{4}$').hasMatch(pin)) {
+      setState(() => _error = 'Введите текущий PIN из 4 цифр');
+      return;
+    }
+    setState(() {
+      _working = true;
+      _error = null;
+    });
+    final valid = await widget.onVerifyPin(pin);
+    if (!mounted) return;
+    if (!valid) {
+      setState(() {
+        _working = false;
+        _error = 'PIN-код введён неверно';
+        _controller.clear();
+      });
+      return;
+    }
+    await widget.onRemovePin();
+    if (mounted) Navigator.of(context).pop(true);
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        body: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(28),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 380),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: IconButton(
+                      onPressed: _working
+                          ? null
+                          : () => Navigator.of(context).pop(),
+                      icon: const Icon(Icons.arrow_back_rounded),
+                    ),
+                  ),
+                  Container(
+                    width: 72,
+                    height: 72,
+                    decoration: BoxDecoration(
+                      color: _coral.withValues(alpha: .14),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.lock_open_rounded,
+                        color: _coral, size: 30),
+                  ),
+                  const SizedBox(height: 22),
+                  Text('Отключить PIN-код',
+                      style: Theme.of(context).textTheme.headlineMedium,
+                      textAlign: TextAlign.center),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Введите текущий PIN для подтверждения',
+                    style: TextStyle(color: _muted),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 28),
+                  PinCellsField(
+                    controller: _controller,
+                    onSubmitted: (_) => _submit(),
+                    onChanged: (pin) {
+                      if (_error != null) setState(() => _error = null);
+                      if (pin.length == 4) _submit();
+                    },
+                    errorText: _error,
+                    enabled: !_working,
+                  ),
+                  if (_working) ...[
+                    const SizedBox(height: 20),
+                    const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: _coral,
+                      ),
+                    ),
+                  ],
+                ]),
+              ),
+            ),
+          ),
+        ),
+      );
+}
+
+class PinCellsField extends StatefulWidget {
+  const PinCellsField({
+    super.key,
+    required this.controller,
+    required this.onSubmitted,
+    this.onChanged,
+    this.errorText,
+    this.enabled = true,
+  });
+
+  final TextEditingController controller;
+  final ValueChanged<String> onSubmitted;
+  final ValueChanged<String>? onChanged;
+  final String? errorText;
+  final bool enabled;
+
+  @override
+  State<PinCellsField> createState() => _PinCellsFieldState();
+}
+
+class _PinCellsFieldState extends State<PinCellsField> {
+  final _focusNode = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_refresh);
+    _focusNode.addListener(_refresh);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && widget.enabled) _focusNode.requestFocus();
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant PinCellsField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_refresh);
+      widget.controller.addListener(_refresh);
+    }
+    if (!oldWidget.enabled && widget.enabled) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _focusNode.requestFocus();
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_refresh);
+    _focusNode.removeListener(_refresh);
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  void _refresh() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final entered = widget.controller.text.length;
+    final hasError = widget.errorText != null;
+    final focused = _focusNode.hasFocus;
+    return Column(children: [
+      SizedBox(
+        height: 62,
+        child: Stack(children: [
+          Semantics(
+            textField: true,
+            obscured: true,
+            label: 'PIN-код, 4 цифры',
+            child: IgnorePointer(
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: List.generate(4, (index) {
+                  final isFilled = index < entered;
+                  final isCurrent =
+                      focused && index == entered && entered < 4;
+                  final border = hasError
+                      ? _coral
+                      : isCurrent
+                          ? _amber
+                          : Colors.white.withValues(alpha: .11);
+                  return Padding(
+                    padding: EdgeInsets.only(right: index == 3 ? 0 : 10),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 170),
+                      curve: Curves.easeOutCubic,
+                      width: 58,
+                      height: 62,
+                      decoration: BoxDecoration(
+                        color: isFilled
+                            ? _amber.withValues(alpha: .10)
+                            : _surfaceHigh,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: border,
+                          width: isCurrent || hasError ? 1.5 : 1,
+                        ),
+                      ),
+                      alignment: Alignment.center,
+                      child: AnimatedScale(
+                        duration: const Duration(milliseconds: 160),
+                        scale: isFilled ? 1 : .65,
+                        child: isFilled
+                            ? const Text('•',
+                                style: TextStyle(
+                                    color: _ink,
+                                    fontSize: 31,
+                                    height: .9,
+                                    fontWeight: FontWeight.w800))
+                            : null,
+                      ),
+                    ),
+                  );
+                }),
+              ),
+            ),
+          ),
+          // A full-size transparent native field makes the Android keyboard
+          // appear reliably while no PIN digit or cursor is ever visible.
+          Positioned.fill(
+            child: ExcludeSemantics(
+              child: TextField(
+                controller: widget.controller,
+                focusNode: _focusNode,
+                enabled: widget.enabled,
+                autofocus: true,
+                maxLength: 4,
+                obscureText: true,
+                enableInteractiveSelection: false,
+                enableIMEPersonalizedLearning: false,
+                enableSuggestions: false,
+                autocorrect: false,
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                onChanged: widget.onChanged,
+                onSubmitted: widget.onSubmitted,
+                showCursor: false,
+                style: const TextStyle(color: Colors.transparent),
+                cursorColor: Colors.transparent,
+                selectionControls: null,
+                decoration: const InputDecoration(
+                  border: InputBorder.none,
+                  counterText: '',
+                  fillColor: Colors.transparent,
+                  filled: true,
+                ),
+              ),
+            ),
+          ),
+        ]),
+      ),
+      if (hasError) ...[
+        const SizedBox(height: 10),
+        Text(widget.errorText!,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: _coral, fontSize: 12)),
+      ],
+    ]);
   }
 }
 
@@ -1000,13 +1374,15 @@ class _TopLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Row(
         children: [
-          Container(
+          SizedBox(
             width: 42,
             height: 42,
-            decoration:
-                const BoxDecoration(color: _amber, shape: BoxShape.circle),
-            child:
-                const Icon(Icons.account_balance_wallet_rounded, color: _navy),
+            child: ClipOval(
+              child: Image.asset(
+                'assets/images/coinly_logo.jpg',
+                fit: BoxFit.cover,
+              ),
+            ),
           ),
           const SizedBox(width: 11),
           Column(
@@ -1534,32 +1910,17 @@ class TransactionsPage extends StatefulWidget {
 }
 
 class _TransactionsPageState extends State<TransactionsPage> {
-  int filter = 0;
-  String query = '';
   DateTime selectedMonth = DateTime(DateTime.now().year, DateTime.now().month);
   @override
   Widget build(BuildContext context) {
     final monthTransactions = widget.transactions
         .where((item) => _sameMonth(_dateOf(item), selectedMonth))
         .toList();
-    var shown = filter == 1
-        ? monthTransactions.where((x) => x.amount < 0).toList()
-        : filter == 2
-            ? monthTransactions.where((x) => x.amount > 0).toList()
-            : monthTransactions;
-    final normalized = query.trim().toLowerCase();
-    if (normalized.isNotEmpty) {
-      shown = shown
-          .where((item) => '${item.title} ${item.subtitle}'
-              .toLowerCase()
-              .contains(normalized))
-          .toList();
-    }
-    final income = shown
+    final income = monthTransactions
         .where(
             (item) => item.kind != TransactionKind.transfer && item.amount > 0)
         .fold<double>(0, (sum, item) => sum + item.amount);
-    final expense = shown
+    final expense = monthTransactions
         .where(
             (item) => item.kind != TransactionKind.transfer && item.amount < 0)
         .fold<double>(0, (sum, item) => sum + item.amount.abs());
@@ -1580,24 +1941,7 @@ class _TransactionsPageState extends State<TransactionsPage> {
               ),
             ],
           ),
-          const SizedBox(height: 16),
-          Container(
-            decoration: BoxDecoration(
-              color: _surface,
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: TextField(
-              onChanged: (value) => setState(() => query = value),
-              decoration: InputDecoration(
-                prefixIcon: const Icon(Icons.search_rounded, color: _muted),
-                hintText: 'Поиск операций',
-                hintStyle: const TextStyle(color: _muted),
-                border: InputBorder.none,
-                contentPadding: const EdgeInsets.symmetric(vertical: 14),
-              ),
-            ),
-          ),
-          const SizedBox(height: 15),
+          const SizedBox(height: 20),
           Row(children: [
             IconButton(
                 onPressed: () => setState(() => selectedMonth =
@@ -1614,26 +1958,7 @@ class _TransactionsPageState extends State<TransactionsPage> {
                     : null,
                 icon: const Icon(Icons.chevron_right_rounded)),
           ]),
-          PillSelector<int>(
-            value: filter,
-            onChanged: (value) => setState(() => filter = value),
-            options: const [
-              SelectorOption(0, 'Все'),
-              SelectorOption(1, 'Расходы'),
-              SelectorOption(2, 'Доходы'),
-            ],
-          ),
-          const Text(
-            'История операций',
-            style: TextStyle(
-              color: _muted,
-              fontSize: 13,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 5),
-          ...shown.map((item) => TransactionTile(item: item)),
-          const SizedBox(height: 18),
+          const SizedBox(height: 16),
           Text(
             'Итоги за ${_monthTitle(selectedMonth)}',
             style: TextStyle(
@@ -1668,6 +1993,17 @@ class _TransactionsPageState extends State<TransactionsPage> {
               ],
             ),
           ),
+          const SizedBox(height: 26),
+          const Text(
+            'История операций',
+            style: TextStyle(
+              color: _muted,
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 5),
+          ...monthTransactions.map((item) => TransactionTile(item: item)),
         ],
       ),
     );
@@ -1759,10 +2095,6 @@ class AccountsPage extends StatelessWidget {
                     .textTheme
                     .headlineMedium
                     ?.copyWith(fontWeight: FontWeight.w800)),
-            const Spacer(),
-            IconButton(
-                onPressed: onAdd,
-                icon: const Icon(Icons.add_circle_outline_rounded)),
           ]),
           const SizedBox(height: 12),
           ...accounts.expand((account) => [
@@ -1845,6 +2177,7 @@ class CardDetailsTile extends StatelessWidget {
   final CardDetails card;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
+
   @override
   Widget build(BuildContext context) => _Card(
         padding: const EdgeInsets.all(15),
@@ -1865,18 +2198,10 @@ class CardDetailsTile extends StatelessWidget {
                     style: const TextStyle(fontWeight: FontWeight.w800)),
                 const SizedBox(height: 3),
                 Text(
-                    '${card.bank} · ${card.currency} · •••• ${_lastFour(card.number)}',
+                    '${card.bank} · ${card.currency} · •••• ${card.lastFour}',
                     style: const TextStyle(color: _muted, fontSize: 12),
                     overflow: TextOverflow.ellipsis),
               ])),
-          IconButton(
-              onPressed: () async {
-                await Clipboard.setData(ClipboardData(text: card.number));
-                if (context.mounted)
-                  _showNotice(context, 'Номер карты скопирован');
-              },
-              icon: const Icon(Icons.copy_outlined, size: 20),
-              tooltip: 'Скопировать номер'),
           PopupMenuButton<String>(
             onSelected: (value) {
               if (value == 'edit') onEdit();
@@ -1901,8 +2226,7 @@ class CardDetailsFormSheet extends StatefulWidget {
 class _CardDetailsFormSheetState extends State<CardDetailsFormSheet> {
   late final TextEditingController title;
   late final TextEditingController bank;
-  late final TextEditingController number;
-  late final TextEditingController cvv;
+  late final TextEditingController lastFour;
   late final TextEditingController expiry;
   late String currency;
   @override
@@ -1911,8 +2235,7 @@ class _CardDetailsFormSheetState extends State<CardDetailsFormSheet> {
     final card = widget.card;
     title = TextEditingController(text: card?.title ?? '');
     bank = TextEditingController(text: card?.bank ?? '');
-    number = TextEditingController(text: card?.number ?? '');
-    cvv = TextEditingController(text: card?.cvv ?? '');
+    lastFour = TextEditingController(text: card?.lastFour ?? '');
     expiry = TextEditingController(text: card?.expiry ?? '');
     currency = card?.currency ?? 'BYN';
   }
@@ -1921,8 +2244,7 @@ class _CardDetailsFormSheetState extends State<CardDetailsFormSheet> {
   void dispose() {
     title.dispose();
     bank.dispose();
-    number.dispose();
-    cvv.dispose();
+    lastFour.dispose();
     expiry.dispose();
     super.dispose();
   }
@@ -1971,25 +2293,18 @@ class _CardDetailsFormSheetState extends State<CardDetailsFormSheet> {
                 onChanged: (value) => setState(() => currency = value!)),
             const SizedBox(height: 10),
             TextField(
-                controller: number,
+                controller: lastFour,
                 keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: 'Номер карты')),
+                maxLength: 4,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                decoration: const InputDecoration(
+                    labelText: 'Последние 4 цифры', counterText: '')),
             const SizedBox(height: 10),
-            Row(children: [
-              Expanded(
-                  child: TextField(
-                      controller: expiry,
-                      keyboardType: TextInputType.datetime,
-                      decoration: const InputDecoration(
-                          labelText: 'Срок действия', hintText: 'MM/YY'))),
-              const SizedBox(width: 10),
-              Expanded(
-                  child: TextField(
-                      controller: cvv,
-                      keyboardType: TextInputType.number,
-                      obscureText: true,
-                      decoration: const InputDecoration(labelText: 'CVV')))
-            ]),
+            TextField(
+                controller: expiry,
+                keyboardType: TextInputType.datetime,
+                decoration: const InputDecoration(
+                    labelText: 'Срок действия', hintText: 'MM/YY')),
             const SizedBox(height: 22),
             SizedBox(
                 width: double.infinity,
@@ -1997,9 +2312,10 @@ class _CardDetailsFormSheetState extends State<CardDetailsFormSheet> {
                     onPressed: () {
                       if (title.text.trim().isEmpty ||
                           bank.text.trim().isEmpty ||
-                          number.text.trim().isEmpty) {
+                          !RegExp(r'^\d{4}$')
+                              .hasMatch(lastFour.text.trim())) {
                         _showNotice(
-                            context, 'Заполните название, банк и номер карты');
+                            context, 'Укажите название, банк и 4 цифры карты');
                         return;
                       }
                       Navigator.pop(
@@ -2008,8 +2324,7 @@ class _CardDetailsFormSheetState extends State<CardDetailsFormSheet> {
                               title.text.trim(),
                               bank.text.trim(),
                               currency,
-                              number.text.trim(),
-                              cvv.text.trim(),
+                              lastFour.text.trim(),
                               expiry.text.trim()));
                     },
                     child: const Text('Сохранить'))),
@@ -2672,6 +2987,7 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
               keyboardType: const TextInputType.numberWithOptions(
                 decimal: true,
               ),
+              inputFormatters: [_moneyInputFormatter],
               autofocus: true,
               style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800),
               decoration: const InputDecoration(
@@ -2702,6 +3018,11 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
             const SizedBox(height: 14),
             TextField(
                 controller: title,
+                keyboardType: TextInputType.text,
+                textCapitalization: TextCapitalization.sentences,
+                textInputAction: TextInputAction.done,
+                maxLines: 1,
+                textAlignVertical: TextAlignVertical.center,
                 decoration: const InputDecoration(
                     labelText: 'Комментарий (необязательно)',
                     prefixIcon: Icon(Icons.edit_outlined))),
@@ -3084,6 +3405,7 @@ class _EditAccountBalanceSheetState extends State<EditAccountBalanceSheet> {
                 autofocus: true,
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: [_moneyInputFormatter],
                 decoration: const InputDecoration(
                     labelText: 'Баланс', suffixText: 'BYN')),
             const SizedBox(height: 22),
@@ -3170,6 +3492,7 @@ class _AddAccountSheetState extends State<AddAccountSheet> {
                 controller: balance,
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: [_moneyInputFormatter],
                 decoration: const InputDecoration(
                     labelText: 'Текущий баланс', suffixText: 'BYN')),
             const SizedBox(height: 22),
@@ -3476,21 +3799,18 @@ class FinanceCategory {
 }
 
 class CardDetails {
-  CardDetails(
-      this.title, this.bank, this.currency, this.number, this.cvv, this.expiry);
+  CardDetails(this.title, this.bank, this.currency, this.lastFour, this.expiry);
   String title;
   String bank;
   String currency;
-  String number;
-  String cvv;
+  String lastFour;
   String expiry;
 
   Map<String, dynamic> toJson() => {
         'title': title,
         'bank': bank,
         'currency': currency,
-        'number': number,
-        'cvv': cvv,
+        'lastFour': lastFour,
         'expiry': expiry,
       };
 
@@ -3498,56 +3818,91 @@ class CardDetails {
         json['title'] as String? ?? 'Карта',
         json['bank'] as String? ?? '',
         json['currency'] as String? ?? 'BYN',
-        json['number'] as String? ?? '',
-        json['cvv'] as String? ?? '',
+        (json['lastFour'] as String? ??
+                _lastFour(json['number'] as String? ?? ''))
+            .replaceAll(RegExp(r'[^0-9]'), ''),
         json['expiry'] as String? ?? '',
       );
 }
 
 class AppStorage {
-  static const _dataKey = 'coinly_data_v1';
-  static const _cardsKey = 'coinly_card_details_v1';
+  static const _dataKey = 'coinly_data_v2';
+  static const _legacyDataKey = 'coinly_data_v1';
+  static const _cardsKey = 'coinly_card_details_v2';
+  static const _legacyCardsKey = 'coinly_card_details_v1';
   static const _pinHashKey = 'coinly_pin_hash_v1';
   static const _pinSaltKey = 'coinly_pin_salt_v1';
   static const _biometricsKey = 'coinly_biometrics_enabled_v1';
+  static const _failedPinAttemptsKey = 'coinly_failed_pin_attempts_v1';
+  static const _pinLockUntilKey = 'coinly_pin_lock_until_v1';
+  static const _fourDigitPinMigrationKey =
+      'coinly_four_digit_pin_reset_completed_v1';
+  static const _pinIterations = 600000;
   static final _secure = FlutterSecureStorage(
     aOptions: AndroidOptions(),
   );
 
   Future<AppData?> loadData() async {
     try {
+      final secureSource = await _secure.read(key: _dataKey);
+      if (secureSource != null) {
+        return AppData.fromJson(
+            Map<String, dynamic>.from(jsonDecode(secureSource)));
+      }
       final preferences = await SharedPreferences.getInstance();
-      final source = preferences.getString(_dataKey);
-      if (source == null) return null;
-      return AppData.fromJson(Map<String, dynamic>.from(jsonDecode(source)));
+      final legacySource = preferences.getString(_legacyDataKey);
+      if (legacySource == null) return null;
+      final data =
+          AppData.fromJson(Map<String, dynamic>.from(jsonDecode(legacySource)));
+      await _secure.write(key: _dataKey, value: legacySource);
+      await preferences.remove(_legacyDataKey);
+      return data;
     } catch (_) {
       return null;
     }
   }
 
   Future<void> saveData(AppData data) async {
+    await _secure.write(key: _dataKey, value: jsonEncode(data.toJson()));
+    // Data in previous versions was plaintext SharedPreferences. Clean it up
+    // in case an app update did not pass through loadData first.
     final preferences = await SharedPreferences.getInstance();
-    await preferences.setString(_dataKey, jsonEncode(data.toJson()));
+    await preferences.remove(_legacyDataKey);
   }
 
   Future<List<CardDetails>?> loadCards() async {
     try {
-      final source = await _secure.read(key: _cardsKey);
+      final currentSource = await _secure.read(key: _cardsKey);
+      final legacySource = currentSource == null
+          ? await _secure.read(key: _legacyCardsKey)
+          : null;
+      final source = currentSource ?? legacySource;
       if (source == null) return null;
       final decoded = jsonDecode(source) as List<dynamic>;
-      return decoded
+      final cards = decoded
           .whereType<Map>()
           .map((item) => CardDetails.fromJson(Map<String, dynamic>.from(item)))
           .toList();
+      if (legacySource != null) {
+        // Persist the sanitised format immediately so full PAN and CVV values
+        // from older releases cannot remain in protected storage indefinitely.
+        await saveCards(cards);
+      }
+      return cards;
     } catch (_) {
       return null;
     }
   }
 
-  Future<void> saveCards(List<CardDetails> cards) => _secure.write(
-        key: _cardsKey,
-        value: jsonEncode(cards.map((card) => card.toJson()).toList()),
-      );
+  Future<void> saveCards(List<CardDetails> cards) async {
+    await _secure.write(
+      key: _cardsKey,
+      value: jsonEncode(cards.map((card) => card.toJson()).toList()),
+    );
+    // Remove legacy records containing full card numbers and CVV as soon as
+    // current data is saved.
+    await _secure.delete(key: _legacyCardsKey);
+  }
 
   Future<bool> hasPin() async {
     try {
@@ -3571,24 +3926,144 @@ class AppStorage {
       );
 
   Future<void> setPin(String pin) async {
+    if (!RegExp(r'^\d{4}$').hasMatch(pin)) {
+      throw ArgumentError.value(pin, 'pin', 'PIN must contain 4 digits');
+    }
+    await _storePin(pin);
+  }
+
+  Future<void> clearPin() async {
+    await _secure.delete(key: _pinHashKey);
+    await _secure.delete(key: _pinSaltKey);
+    await _secure.delete(key: _biometricsKey);
+    await _clearFailedPinAttempts();
+  }
+
+  Future<void> resetPinForFourDigitMigration() async {
+    try {
+      if (await _secure.read(key: _fourDigitPinMigrationKey) == 'done') return;
+      // Older MVP builds allowed a 4–6 digit PIN, but its verifier does not
+      // encode the original length. This user-requested one-time migration
+      // resets that old app lock without touching financial data.
+      await clearPin();
+      await _secure.write(key: _fourDigitPinMigrationKey, value: 'done');
+    } catch (_) {
+      // Secure storage errors are handled by the normal first-run flow.
+    }
+  }
+
+  Future<void> _storePin(String pin) async {
     final random = math.Random.secure();
-    final salt = List<int>.generate(20, (_) => random.nextInt(256)).join(',');
+    final salt = base64UrlEncode(
+        List<int>.generate(32, (_) => random.nextInt(256)));
     await _secure.write(key: _pinSaltKey, value: salt);
-    await _secure.write(key: _pinHashKey, value: _pinHash(salt, pin));
+    await _secure.write(
+        key: _pinHashKey, value: 'v2:${await _derivePinHash(salt, pin)}');
+    await _clearFailedPinAttempts();
   }
 
   Future<bool> verifyPin(String pin) async {
     try {
+      final lockUntil =
+          int.tryParse(await _secure.read(key: _pinLockUntilKey) ?? '0') ?? 0;
+      if (DateTime.now().millisecondsSinceEpoch < lockUntil) return false;
+      if (lockUntil > 0) await _clearFailedPinAttempts();
       final hash = await _secure.read(key: _pinHashKey);
       final salt = await _secure.read(key: _pinSaltKey);
-      return hash != null && salt != null && hash == _pinHash(salt, pin);
+      if (hash == null || salt == null) return false;
+
+      final valid = hash.startsWith('v2:')
+          ? _constantTimeEquals(
+              hash.substring(3), await _derivePinHash(salt, pin))
+          : _constantTimeEquals(hash, _legacyPinHash(salt, pin));
+      if (!valid) {
+        await _recordFailedPinAttempt();
+        return false;
+      }
+
+      // A successful unlock is the only safe time to transparently migrate
+      // a legacy SHA-256 verifier.
+      if (!hash.startsWith('v2:')) {
+        await _storePin(pin);
+      } else {
+        await _clearFailedPinAttempts();
+      }
+      return true;
     } catch (_) {
       return false;
     }
   }
 
-  String _pinHash(String salt, String pin) =>
+  Future<Duration?> pinLockRemaining() async {
+    try {
+      final lockUntil = int.tryParse(
+              await _secure.read(key: _pinLockUntilKey) ?? '0') ??
+          0;
+      final milliseconds = lockUntil - DateTime.now().millisecondsSinceEpoch;
+      if (milliseconds <= 0) return null;
+      return Duration(milliseconds: milliseconds);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<String> _derivePinHash(String salt, String pin) =>
+      Isolate.run(() => _pbkdf2HmacSha256(salt, pin, _pinIterations));
+
+  Future<void> _recordFailedPinAttempt() async {
+    final failures =
+        (int.tryParse(await _secure.read(key: _failedPinAttemptsKey) ?? '0') ??
+               0) +
+           1;
+    if (failures >= 5) {
+      await _secure.write(
+        key: _pinLockUntilKey,
+        value: DateTime.now()
+            .add(const Duration(seconds: 30))
+            .millisecondsSinceEpoch
+            .toString(),
+      );
+      await _secure.delete(key: _failedPinAttemptsKey);
+      return;
+    }
+    await _secure.write(key: _failedPinAttemptsKey, value: '$failures');
+  }
+
+  Future<void> _clearFailedPinAttempts() async {
+    await _secure.delete(key: _failedPinAttemptsKey);
+    await _secure.delete(key: _pinLockUntilKey);
+  }
+
+  String _legacyPinHash(String salt, String pin) =>
       sha256.convert(utf8.encode('$salt:$pin')).toString();
+}
+
+String _pbkdf2HmacSha256(String encodedSalt, String pin, int iterations) {
+  final hmac = Hmac(sha256, utf8.encode(pin));
+  final salt = base64Url.decode(base64Url.normalize(encodedSalt));
+  final firstBlock = <int>[...salt, 0, 0, 0, 1];
+  var u = hmac.convert(firstBlock).bytes;
+  final result = List<int>.from(u);
+  for (var iteration = 1; iteration < iterations; iteration++) {
+    u = hmac.convert(u).bytes;
+    for (var index = 0; index < result.length; index++) {
+      result[index] ^= u[index];
+    }
+  }
+  return base64UrlEncode(result);
+}
+
+bool _constantTimeEquals(String left, String right) {
+  final leftBytes = utf8.encode(left);
+  final rightBytes = utf8.encode(right);
+  var difference = leftBytes.length ^ rightBytes.length;
+  final length = math.max(leftBytes.length, rightBytes.length);
+  for (var index = 0; index < length; index++) {
+    final leftByte = index < leftBytes.length ? leftBytes[index] : 0;
+    final rightByte = index < rightBytes.length ? rightBytes[index] : 0;
+    difference |= leftByte ^ rightByte;
+  }
+  return difference == 0;
 }
 
 class AppData {
@@ -3676,8 +4151,7 @@ class AppData {
       );
 
   static List<CardDetails> defaultCards() => [
-        CardDetails('Основная карта', 'Беларусбанк', 'BYN',
-            '9112 1234 5678 4821', '123', '08/29'),
+        CardDetails('Основная карта', 'Беларусбанк', 'BYN', '4821', '08/29'),
       ];
 
   Map<String, dynamic> toJson() => {
@@ -3715,6 +4189,7 @@ class PinGate extends StatefulWidget {
     required this.onUnlock,
     required this.biometricsEnabled,
     required this.onBiometricUnlock,
+    required this.onLockRemaining,
   });
 
   final bool hasPin;
@@ -3722,6 +4197,7 @@ class PinGate extends StatefulWidget {
   final Future<bool> Function(String pin) onUnlock;
   final bool biometricsEnabled;
   final Future<bool> Function() onBiometricUnlock;
+  final Future<Duration?> Function() onLockRemaining;
 
   @override
   State<PinGate> createState() => _PinGateState();
@@ -3750,9 +4226,10 @@ class _PinGateState extends State<PinGate> {
   }
 
   Future<void> _submit() async {
+    if (_working) return;
     final pin = _controller.text.trim();
-    if (!RegExp(r'^\\d{4,6}$').hasMatch(pin)) {
-      setState(() => _error = 'Введите PIN из 4–6 цифр');
+    if (!RegExp(r'^\d{4}$').hasMatch(pin)) {
+      setState(() => _error = 'Введите PIN из 4 цифр');
       return;
     }
     if (!widget.hasPin && _firstPin == null) {
@@ -3770,9 +4247,15 @@ class _PinGateState extends State<PinGate> {
     if (widget.hasPin) {
       final valid = await widget.onUnlock(pin);
       if (mounted && !valid) {
+        final lockedFor = await widget.onLockRemaining();
+        if (!mounted) return;
         setState(() {
           _working = false;
-          _error = 'Неверный PIN';
+          _error = lockedFor == null
+              ? 'Неверный PIN'
+              : 'Слишком много попыток. Повторите через ' +
+                  (lockedFor.inSeconds + 1).toString() +
+                  ' сек.';
           _controller.clear();
         });
       }
@@ -3813,7 +4296,7 @@ class _PinGateState extends State<PinGate> {
         ? 'Приложение заблокировано'
         : isConfirming
             ? 'Подтвердите код для входа'
-            : 'Создайте PIN из 4–6 цифр';
+            : 'Создайте PIN из 4 цифр';
     return Scaffold(
       body: SafeArea(
         child: Center(
@@ -3842,31 +4325,24 @@ class _PinGateState extends State<PinGate> {
                     style: const TextStyle(color: _muted),
                     textAlign: TextAlign.center),
                 const SizedBox(height: 28),
-                TextField(
+                PinCellsField(
                   controller: _controller,
-                  autofocus: true,
-                  maxLength: 6,
-                  obscureText: true,
-                  obscuringCharacter: '•',
-                  keyboardType: TextInputType.number,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 24, letterSpacing: 10),
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                   onSubmitted: (_) => _submit(),
-                  decoration: InputDecoration(
-                    counterText: '',
-                    hintText: '••••',
-                    errorText: _error,
-                  ),
+                  onChanged: (pin) {
+                    if (_error != null) setState(() => _error = null);
+                    if (pin.length == 4) _submit();
+                  },
+                  errorText: _error,
+                  enabled: !_working,
                 ),
-                const SizedBox(height: 16),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton(
-                    onPressed: _working ? null : _submit,
-                    child: Text(_working ? 'Проверяем…' : 'Продолжить'),
+                if (_working) ...[
+                  const SizedBox(height: 20),
+                  const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
                   ),
-                ),
+                ],
                 if (widget.biometricsEnabled) ...[
                   const SizedBox(height: 10),
                   TextButton.icon(
