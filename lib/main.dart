@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:isolate';
 import 'dart:math' as math;
-import 'dart:ui' show ImageFilter;
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
@@ -14,10 +13,16 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final storage = AppStorage();
   await storage.resetPinForFourDigitMigration();
-  final data = await storage.loadData();
-  final cards = await storage.loadCards();
-  final hasPin = await storage.hasPin();
-  final biometricsEnabled = await storage.biometricsEnabled();
+  final startupValues = await Future.wait<Object?>([
+    storage.loadData(),
+    storage.loadCards(),
+    storage.hasPin(),
+    storage.biometricsEnabled(),
+  ]);
+  final data = startupValues[0] as AppData?;
+  final cards = startupValues[1] as List<CardDetails>?;
+  final hasPin = startupValues[2] as bool;
+  final biometricsEnabled = startupValues[3] as bool;
   runApp(CoinlyApp(
     storage: storage,
     initialData: data,
@@ -27,14 +32,16 @@ Future<void> main() async {
   ));
 }
 
-const _amber = Color(0xFFFFB547);
-const _mint = Color(0xFF67D7B3);
-const _coral = Color(0xFFFF8A7A);
-const _navy = Color(0xFF10141E);
-const _surface = Color(0xFF1B202C);
-const _surfaceHigh = Color(0xFF252C39);
-const _ink = Color(0xFFF7F3EC);
-const _muted = Color(0xFF9DA5B4);
+const _amber = Color(0xFFF2B84B);
+const _mint = Color(0xFF6BD2B0);
+const _coral = Color(0xFFFF887A);
+const _navy = Color(0xFF0F141D);
+const _surface = Color(0xFF181F2B);
+const _surfaceHigh = Color(0xFF222B39);
+const _ink = Color(0xFFF7F4EE);
+const _muted = Color(0xFF9FA9B8);
+const _motionCurve = Cubic(.22, 1, .36, 1);
+const _quickMotion = Duration(milliseconds: 180);
 final _moneyInputFormatter = TextInputFormatter.withFunction(
   (oldValue, newValue) =>
       RegExp(r'^\d{0,12}([,.]\d{0,2})?$').hasMatch(newValue.text)
@@ -183,26 +190,30 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
             )
             .copyWith(
               displayLarge: base.textTheme.displayLarge?.copyWith(
-                fontFamily: 'serif',
-                fontWeight: FontWeight.w800,
-                letterSpacing: -1.2,
+                fontFamily: 'sans-serif',
+                fontWeight: FontWeight.w600,
+                height: .98,
+                letterSpacing: -1.45,
               ),
               headlineMedium: base.textTheme.headlineMedium?.copyWith(
-                fontFamily: 'serif',
-                fontWeight: FontWeight.w800,
-                letterSpacing: -0.8,
+                fontFamily: 'sans-serif',
+                fontWeight: FontWeight.w600,
+                height: 1,
+                letterSpacing: -1.05,
               ),
               titleLarge: base.textTheme.titleLarge?.copyWith(
-                fontFamily: 'serif',
-                fontWeight: FontWeight.w800,
-                letterSpacing: -0.45,
+                fontFamily: 'sans-serif',
+                fontWeight: FontWeight.w600,
+                height: 1.08,
+                letterSpacing: -.55,
               ),
               titleMedium: base.textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w700,
-                letterSpacing: -0.15,
+                fontWeight: FontWeight.w600,
+                letterSpacing: -.2,
               ),
               bodyLarge: base.textTheme.bodyLarge?.copyWith(
                 letterSpacing: 0.1,
+                height: 1.45,
               ),
             ),
         filledButtonTheme: FilledButtonThemeData(
@@ -210,18 +221,27 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
             backgroundColor: _amber,
             foregroundColor: _navy,
             elevation: 0,
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            textStyle: const TextStyle(fontWeight: FontWeight.w800),
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            minimumSize: const Size(44, 52),
+            shape: const StadiumBorder(),
+            animationDuration: _quickMotion,
+            textStyle: const TextStyle(fontWeight: FontWeight.w700),
           ),
         ),
         outlinedButtonTheme: OutlinedButtonThemeData(
           style: OutlinedButton.styleFrom(
             foregroundColor: _ink,
             side: BorderSide(color: Colors.white.withValues(alpha: .14)),
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            minimumSize: const Size(44, 50),
+            shape: const StadiumBorder(),
+            animationDuration: _quickMotion,
+          ),
+        ),
+        iconButtonTheme: IconButtonThemeData(
+          style: IconButton.styleFrom(
+            minimumSize: const Size(44, 44),
+            foregroundColor: _ink,
+            splashFactory: InkSparkle.splashFactory,
           ),
         ),
         chipTheme: base.chipTheme.copyWith(
@@ -257,15 +277,23 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
             borderSide: BorderSide.none,
           ),
           enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(15),
+            borderRadius: BorderRadius.circular(18),
             borderSide: BorderSide(color: Colors.white.withValues(alpha: .06)),
           ),
           focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(15),
+            borderRadius: BorderRadius.circular(18),
             borderSide: const BorderSide(color: _amber, width: 1.4),
           ),
           contentPadding:
-              const EdgeInsets.symmetric(horizontal: 15, vertical: 14),
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
+        ),
+        snackBarTheme: SnackBarThemeData(
+          backgroundColor: _surfaceHigh,
+          behavior: SnackBarBehavior.floating,
+          elevation: 0,
+          shape: const StadiumBorder(),
+          contentTextStyle:
+              const TextStyle(color: _ink, fontWeight: FontWeight.w600),
         ),
         bottomSheetTheme: const BottomSheetThemeData(
           backgroundColor: Colors.transparent,
@@ -305,26 +333,37 @@ class LaunchSplashPage extends StatelessWidget {
   const LaunchSplashPage({super.key});
 
   @override
-  Widget build(BuildContext context) => const Scaffold(
+  Widget build(BuildContext context) => Scaffold(
         body: Center(
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            ClipRRect(
-              borderRadius: BorderRadius.all(Radius.circular(36)),
-              child: Image(
-                image: AssetImage('assets/images/coinly_logo.jpg'),
-                width: 156,
-                height: 156,
-                fit: BoxFit.cover,
-              ),
+          child: TweenAnimationBuilder<double>(
+            tween: Tween(begin: .92, end: 1),
+            duration: const Duration(milliseconds: 360),
+            curve: _motionCurve,
+            builder: (context, value, child) => Opacity(
+              opacity: value,
+              child: child,
             ),
-            SizedBox(height: 18),
-            Text('Coinly',
-                style: TextStyle(
-                    fontFamily: 'serif',
-                    fontSize: 27,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: -0.7)),
-          ]),
+            child: const Column(mainAxisSize: MainAxisSize.min, children: [
+              ClipRRect(
+                borderRadius: BorderRadius.all(Radius.circular(32)),
+                child: Image(
+                  image: AssetImage('assets/images/coinly_logo.jpg'),
+                  width: 92,
+                  height: 92,
+                  fit: BoxFit.cover,
+                ),
+              ),
+              SizedBox(height: 16),
+              Text('Coinly',
+                  style: TextStyle(
+                      fontSize: 29,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: -1.15)),
+              SizedBox(height: 5),
+              Text('Личный бюджет',
+                  style: TextStyle(color: _muted, fontSize: 13)),
+            ]),
+          ),
         ),
       );
 }
@@ -383,13 +422,16 @@ class _CoinlyHomeState extends State<CoinlyHome> {
   }
 
   Future<void> _persist() async {
-    await widget.storage.saveData(AppData(
+    final data = AppData(
       transactions: _transactions,
       balance: _balance,
       accounts: _accounts,
       categories: _categories,
-    ));
-    await widget.storage.saveCards(_cards);
+    );
+    await Future.wait([
+      widget.storage.saveData(data),
+      widget.storage.saveCards(_cards),
+    ]);
   }
 
   Future<void> _addTransaction(
@@ -477,10 +519,48 @@ class _CoinlyHomeState extends State<CoinlyHome> {
       card.title = updated.title;
       card.bank = updated.bank;
       card.currency = updated.currency;
-      card.lastFour = updated.lastFour;
+      card.number = updated.number;
       card.expiry = updated.expiry;
     });
     await _persist();
+  }
+
+  Future<void> _copyCardNumber(CardDetails card) async {
+    if (!card.hasFullNumber) {
+      _showNotice(context, 'Добавьте полный номер карты в реквизитах');
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Скопировать номер карты?'),
+        content: const Text(
+          'Номер попадёт в системный буфер обмена и будет очищен через 30 секунд.',
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Отмена')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Скопировать')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final number = card.number;
+    await Clipboard.setData(ClipboardData(text: number));
+    if (mounted) _showNotice(context, 'Номер карты скопирован');
+    Future<void>.delayed(const Duration(seconds: 30), () async {
+      try {
+        final current = await Clipboard.getData(Clipboard.kTextPlain);
+        if (current?.text == number) {
+          await Clipboard.setData(const ClipboardData(text: ''));
+        }
+      } catch (_) {
+        // Clipboard cleanup must not affect the card screen.
+      }
+    });
   }
 
   void _deleteCard(CardDetails card) {
@@ -508,24 +588,25 @@ class _CoinlyHomeState extends State<CoinlyHome> {
           onEdit: _editAccount,
           onAddCard: _addCard,
           onEditCard: _editCard,
-          onDeleteCard: _deleteCard),
+          onDeleteCard: _deleteCard,
+          onCopyCardNumber: _copyCardNumber),
       CategoriesPage(categories: _categories, onChanged: _persist),
       const AnalyticsPage(),
     ];
     return Scaffold(
       body: SafeArea(
         child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 260),
-          switchInCurve: Curves.easeOutCubic,
-          switchOutCurve: Curves.easeInCubic,
+          duration: const Duration(milliseconds: 220),
+          switchInCurve: _motionCurve,
+          switchOutCurve: Curves.easeIn,
           transitionBuilder: (child, animation) => FadeTransition(
             opacity: animation,
             child: SlideTransition(
               position: Tween<Offset>(
-                begin: const Offset(0.018, 0),
+                begin: const Offset(.025, 0),
                 end: Offset.zero,
               ).animate(animation),
-              child: child,
+              child: RepaintBoundary(child: child),
             ),
           ),
           child: KeyedSubtree(key: ValueKey(_tab), child: pages[_tab]),
@@ -539,7 +620,7 @@ class _CoinlyHomeState extends State<CoinlyHome> {
   }
 
   Future<void> _openSettings() async {
-    await Navigator.of(context).push(MaterialPageRoute<void>(
+    await Navigator.of(context).push(AppPageRoute<void>(
       builder: (_) => SettingsPage(
         hasPin: widget.hasPin,
         biometricsEnabled: widget.biometricsEnabled,
@@ -610,7 +691,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _managePin() async {
     final changed = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(
+      AppPageRoute(
         builder: (_) => PinChangePage(
           hasExistingPin: _hasPin,
           onVerifyOldPin: widget.onVerifyPin,
@@ -623,7 +704,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _removePin() async {
     final removed = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(
+      AppPageRoute(
         builder: (_) => PinRemovalPage(
           onVerifyPin: widget.onVerifyPin,
           onRemovePin: widget.onRemovePin,
@@ -1031,9 +1112,8 @@ class _PinRemovalPageState extends State<PinRemovalPage> {
                   Align(
                     alignment: Alignment.centerLeft,
                     child: IconButton(
-                      onPressed: _working
-                          ? null
-                          : () => Navigator.of(context).pop(),
+                      onPressed:
+                          _working ? null : () => Navigator.of(context).pop(),
                       icon: const Icon(Icons.arrow_back_rounded),
                     ),
                   ),
@@ -1164,8 +1244,7 @@ class _PinCellsFieldState extends State<PinCellsField> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: List.generate(4, (index) {
                   final isFilled = index < entered;
-                  final isCurrent =
-                      focused && index == entered && entered < 4;
+                  final isCurrent = focused && index == entered && entered < 4;
                   final border = hasError
                       ? _coral
                       : isCurrent
@@ -1175,7 +1254,7 @@ class _PinCellsFieldState extends State<PinCellsField> {
                     padding: EdgeInsets.only(right: index == 3 ? 0 : 10),
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 170),
-                      curve: Curves.easeOutCubic,
+                      curve: _motionCurve,
                       width: 58,
                       height: 62,
                       decoration: BoxDecoration(
@@ -1189,17 +1268,10 @@ class _PinCellsFieldState extends State<PinCellsField> {
                         ),
                       ),
                       alignment: Alignment.center,
-                      child: AnimatedScale(
+                      child: AnimatedOpacity(
                         duration: const Duration(milliseconds: 160),
-                        scale: isFilled ? 1 : .65,
-                        child: isFilled
-                            ? const Text('•',
-                                style: TextStyle(
-                                    color: _ink,
-                                    fontSize: 31,
-                                    height: .9,
-                                    fontWeight: FontWeight.w800))
-                            : null,
+                        opacity: isFilled ? 1 : 0,
+                        child: const Icon(Icons.circle, size: 10, color: _ink),
                       ),
                     ),
                   );
@@ -1232,9 +1304,13 @@ class _PinCellsFieldState extends State<PinCellsField> {
                 selectionControls: null,
                 decoration: const InputDecoration(
                   border: InputBorder.none,
+                  enabledBorder: InputBorder.none,
+                  focusedBorder: InputBorder.none,
+                  disabledBorder: InputBorder.none,
                   counterText: '',
-                  fillColor: Colors.transparent,
-                  filled: true,
+                  filled: false,
+                  isCollapsed: true,
+                  contentPadding: EdgeInsets.zero,
                 ),
               ),
             ),
@@ -1260,8 +1336,31 @@ class PageFrame extends StatelessWidget {
   final Widget child;
   final EdgeInsets padding;
   @override
-  Widget build(BuildContext context) =>
-      SingleChildScrollView(padding: padding, child: child);
+  Widget build(BuildContext context) => ScrollConfiguration(
+        behavior: ScrollConfiguration.of(context).copyWith(overscroll: false),
+        child: SingleChildScrollView(padding: padding, child: child),
+      );
+}
+
+class AppPageRoute<T> extends PageRouteBuilder<T> {
+  AppPageRoute({required WidgetBuilder builder})
+      : super(
+          pageBuilder: (context, animation, secondaryAnimation) =>
+              builder(context),
+          transitionDuration: const Duration(milliseconds: 240),
+          reverseTransitionDuration: const Duration(milliseconds: 190),
+          transitionsBuilder: (context, animation, secondaryAnimation, child) =>
+              FadeTransition(
+            opacity: animation,
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: const Offset(.035, 0),
+                end: Offset.zero,
+              ).chain(CurveTween(curve: _motionCurve)).animate(animation),
+              child: child,
+            ),
+          ),
+        );
 }
 
 class DashboardPage extends StatelessWidget {
@@ -1418,27 +1517,14 @@ class GlassPanel extends StatelessWidget {
   final double radius;
   final EdgeInsets padding;
   @override
-  Widget build(BuildContext context) => ClipRRect(
-        borderRadius: BorderRadius.circular(radius),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-          child: Container(
-            padding: padding,
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  Colors.white.withValues(alpha: .13),
-                  const Color(0xFF202837).withValues(alpha: .74)
-                ],
-              ),
-              borderRadius: BorderRadius.circular(radius),
-              border: Border.all(color: Colors.white.withValues(alpha: .16)),
-            ),
-            child: child,
-          ),
+  Widget build(BuildContext context) => Container(
+        padding: padding,
+        decoration: BoxDecoration(
+          color: _surfaceHigh,
+          borderRadius: BorderRadius.circular(radius),
+          border: Border.all(color: Colors.white.withValues(alpha: .055)),
         ),
+        child: child,
       );
 }
 
@@ -1454,16 +1540,24 @@ class BalanceCard extends StatefulWidget {
 class _BalanceCardState extends State<BalanceCard> {
   bool visible = true;
   @override
-  Widget build(BuildContext context) => GlassPanel(
-        radius: 28,
-        padding: const EdgeInsets.all(22),
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.fromLTRB(22, 20, 14, 15),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFF293547), Color(0xFF1B2330)],
+          ),
+          borderRadius: BorderRadius.circular(28),
+          border: Border.all(color: Colors.white.withValues(alpha: .08)),
+        ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
                 const Text('Общий баланс',
-                    style: TextStyle(color: Color(0xFFC6CEDB))),
+                    style: TextStyle(color: Color(0xFFC8D0DC), fontSize: 13)),
                 const Spacer(),
                 IconButton(
                   onPressed: () => setState(() => visible = !visible),
@@ -1477,24 +1571,32 @@ class _BalanceCardState extends State<BalanceCard> {
                 ),
               ],
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 9),
             AnimatedSwitcher(
-              duration: const Duration(milliseconds: 180),
-              transitionBuilder: (child, animation) =>
-                  FadeTransition(opacity: animation, child: child),
+              duration: _quickMotion,
+              switchInCurve: _motionCurve,
+              transitionBuilder: (child, animation) => FadeTransition(
+                opacity: animation,
+                child: SlideTransition(
+                  position: Tween<Offset>(
+                    begin: const Offset(0, .08),
+                    end: Offset.zero,
+                  ).animate(animation),
+                  child: child,
+                ),
+              ),
               child: Text(
                 visible ? '${_money(widget.balance)} BYN' : '•••••• BYN',
                 key: ValueKey(visible),
                 style: const TextStyle(
-                  fontFamily: 'serif',
-                  fontSize: 34,
-                  height: 1.05,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: -1.1,
+                  fontSize: 33,
+                  height: 1.02,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: -1.35,
                 ),
               ),
             ),
-            const SizedBox(height: 23),
+            const SizedBox(height: 22),
             Row(
               children: [
                 _Pill(
@@ -1503,10 +1605,15 @@ class _BalanceCardState extends State<BalanceCard> {
                   color: _mint,
                 ),
                 const Spacer(),
-                IconButton(
-                    onPressed: widget.onShowAccounts,
-                    icon: const Icon(Icons.arrow_forward_rounded),
-                    color: _amber),
+                IconButton.filledTonal(
+                  onPressed: widget.onShowAccounts,
+                  icon: const Icon(Icons.arrow_outward_rounded, size: 19),
+                  style: IconButton.styleFrom(
+                    backgroundColor: _amber,
+                    foregroundColor: _navy,
+                    minimumSize: const Size(40, 40),
+                  ),
+                ),
               ],
             ),
           ],
@@ -1670,7 +1777,7 @@ class PillSelector<T> extends StatelessWidget {
                 borderRadius: BorderRadius.circular(13),
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 220),
-                  curve: Curves.easeOutCubic,
+                  curve: _motionCurve,
                   padding: const EdgeInsets.symmetric(vertical: 10),
                   decoration: BoxDecoration(
                     color: selected
@@ -1724,7 +1831,7 @@ class SoftChoiceChip extends StatelessWidget {
         borderRadius: BorderRadius.circular(17),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 190),
-          curve: Curves.easeOutCubic,
+          curve: _motionCurve,
           height: 66,
           padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 8),
           decoration: BoxDecoration(
@@ -1777,36 +1884,26 @@ class _PressScaleState extends State<PressScale> {
   bool pressed = false;
   @override
   Widget build(BuildContext context) => AnimatedContainer(
-        duration: const Duration(milliseconds: 170),
-        curve: Curves.easeOutCubic,
+        duration: const Duration(milliseconds: 110),
+        curve: _motionCurve,
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(widget.radius),
-          boxShadow: pressed
-              ? [
-                  BoxShadow(
-                      color: _amber.withValues(alpha: .25),
-                      blurRadius: 20,
-                      spreadRadius: 1)
-                ]
-              : const [],
+          border: Border.all(
+            color: pressed ? _amber.withValues(alpha: .38) : Colors.transparent,
+          ),
         ),
-        child: AnimatedScale(
-          duration: const Duration(milliseconds: 120),
-          curve: Curves.easeOutBack,
-          scale: pressed ? .94 : 1,
-          child: Material(
-            color: Colors.transparent,
+        child: Material(
+          color: Colors.transparent,
+          borderRadius: BorderRadius.circular(widget.radius),
+          child: InkWell(
+            onTap: widget.onTap,
+            onTapDown: (_) => setState(() => pressed = true),
+            onTapUp: (_) => setState(() => pressed = false),
+            onTapCancel: () => setState(() => pressed = false),
             borderRadius: BorderRadius.circular(widget.radius),
-            child: InkWell(
-              onTap: widget.onTap,
-              onTapDown: (_) => setState(() => pressed = true),
-              onTapUp: (_) => setState(() => pressed = false),
-              onTapCancel: () => setState(() => pressed = false),
-              borderRadius: BorderRadius.circular(widget.radius),
-              splashColor: Colors.white.withValues(alpha: .14),
-              highlightColor: Colors.transparent,
-              child: widget.child,
-            ),
+            splashColor: _amber.withValues(alpha: .12),
+            highlightColor: Colors.transparent,
+            child: widget.child,
           ),
         ),
       );
@@ -1911,6 +2008,8 @@ class TransactionsPage extends StatefulWidget {
 
 class _TransactionsPageState extends State<TransactionsPage> {
   DateTime selectedMonth = DateTime(DateTime.now().year, DateTime.now().month);
+  TransactionKind? selectedType;
+
   @override
   Widget build(BuildContext context) {
     final monthTransactions = widget.transactions
@@ -1924,6 +2023,9 @@ class _TransactionsPageState extends State<TransactionsPage> {
         .where(
             (item) => item.kind != TransactionKind.transfer && item.amount < 0)
         .fold<double>(0, (sum, item) => sum + item.amount.abs());
+    final visibleTransactions = monthTransactions
+        .where((item) => selectedType == null || item.kind == selectedType)
+        .toList();
     final currentMonth = DateTime(DateTime.now().year, DateTime.now().month);
     final canGoNext = selectedMonth.isBefore(currentMonth);
     return PageFrame(
@@ -1993,6 +2095,18 @@ class _TransactionsPageState extends State<TransactionsPage> {
               ],
             ),
           ),
+          const SizedBox(height: 14),
+          PillSelector<TransactionKind?>(
+            value: selectedType,
+            onChanged: (value) => setState(() => selectedType = value),
+            options: const [
+              SelectorOption<TransactionKind?>(null, 'Все'),
+              SelectorOption<TransactionKind?>(
+                  TransactionKind.expense, 'Расходы'),
+              SelectorOption<TransactionKind?>(
+                  TransactionKind.income, 'Доходы'),
+            ],
+          ),
           const SizedBox(height: 26),
           const Text(
             'История операций',
@@ -2003,7 +2117,7 @@ class _TransactionsPageState extends State<TransactionsPage> {
             ),
           ),
           const SizedBox(height: 5),
-          ...monthTransactions.map((item) => TransactionTile(item: item)),
+          ...visibleTransactions.map((item) => TransactionTile(item: item)),
         ],
       ),
     );
@@ -2077,7 +2191,8 @@ class AccountsPage extends StatelessWidget {
       required this.onEdit,
       required this.onAddCard,
       required this.onEditCard,
-      required this.onDeleteCard});
+      required this.onDeleteCard,
+      required this.onCopyCardNumber});
   final List<BudgetAccount> accounts;
   final List<CardDetails> cards;
   final VoidCallback onAdd;
@@ -2085,6 +2200,7 @@ class AccountsPage extends StatelessWidget {
   final VoidCallback onAddCard;
   final ValueChanged<CardDetails> onEditCard;
   final ValueChanged<CardDetails> onDeleteCard;
+  final ValueChanged<CardDetails> onCopyCardNumber;
 
   @override
   Widget build(BuildContext context) => PageFrame(
@@ -2119,7 +2235,8 @@ class AccountsPage extends StatelessWidget {
                 CardDetailsTile(
                     card: card,
                     onEdit: () => onEditCard(card),
-                    onDelete: () => onDeleteCard(card)),
+                    onDelete: () => onDeleteCard(card),
+                    onCopyNumber: () => onCopyCardNumber(card)),
                 const SizedBox(height: 10)
               ]),
           OutlinedButton.icon(
@@ -2173,10 +2290,12 @@ class CardDetailsTile extends StatelessWidget {
       {super.key,
       required this.card,
       required this.onEdit,
-      required this.onDelete});
+      required this.onDelete,
+      required this.onCopyNumber});
   final CardDetails card;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
+  final VoidCallback onCopyNumber;
 
   @override
   Widget build(BuildContext context) => _Card(
@@ -2197,11 +2316,15 @@ class CardDetailsTile extends StatelessWidget {
                 Text(card.title,
                     style: const TextStyle(fontWeight: FontWeight.w800)),
                 const SizedBox(height: 3),
-                Text(
-                    '${card.bank} · ${card.currency} · •••• ${card.lastFour}',
+                Text('${card.bank} · ${card.currency} · •••• ${card.lastFour}',
                     style: const TextStyle(color: _muted, fontSize: 12),
                     overflow: TextOverflow.ellipsis),
               ])),
+          IconButton(
+            tooltip: 'Копировать номер карты',
+            onPressed: onCopyNumber,
+            icon: const Icon(Icons.copy_outlined, size: 20),
+          ),
           PopupMenuButton<String>(
             onSelected: (value) {
               if (value == 'edit') onEdit();
@@ -2226,16 +2349,19 @@ class CardDetailsFormSheet extends StatefulWidget {
 class _CardDetailsFormSheetState extends State<CardDetailsFormSheet> {
   late final TextEditingController title;
   late final TextEditingController bank;
-  late final TextEditingController lastFour;
+  late final TextEditingController number;
+  late final TextEditingController cvv;
   late final TextEditingController expiry;
   late String currency;
+  bool _cvvVisible = false;
   @override
   void initState() {
     super.initState();
     final card = widget.card;
     title = TextEditingController(text: card?.title ?? '');
     bank = TextEditingController(text: card?.bank ?? '');
-    lastFour = TextEditingController(text: card?.lastFour ?? '');
+    number = TextEditingController(text: card?.number ?? '');
+    cvv = TextEditingController();
     expiry = TextEditingController(text: card?.expiry ?? '');
     currency = card?.currency ?? 'BYN';
   }
@@ -2244,7 +2370,8 @@ class _CardDetailsFormSheetState extends State<CardDetailsFormSheet> {
   void dispose() {
     title.dispose();
     bank.dispose();
-    lastFour.dispose();
+    number.dispose();
+    cvv.dispose();
     expiry.dispose();
     super.dispose();
   }
@@ -2253,82 +2380,130 @@ class _CardDetailsFormSheetState extends State<CardDetailsFormSheet> {
   Widget build(BuildContext context) => Padding(
         padding:
             EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
-        child: Container(
-          padding: const EdgeInsets.fromLTRB(20, 14, 20, 28),
-          decoration: const BoxDecoration(
-              color: _surfaceHigh,
-              borderRadius: BorderRadius.vertical(top: Radius.circular(28))),
-          child: SingleChildScrollView(
-              child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Container(
-                width: 36,
-                height: 4,
-                decoration: BoxDecoration(
-                    color: _muted, borderRadius: BorderRadius.circular(8))),
-            const SizedBox(height: 20),
-            Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                    widget.card == null
-                        ? 'Реквизиты карты'
-                        : 'Редактировать карту',
-                    style: const TextStyle(
-                        fontSize: 21, fontWeight: FontWeight.w800))),
-            const SizedBox(height: 16),
-            TextField(
-                controller: title,
-                decoration: const InputDecoration(labelText: 'Название карты')),
-            const SizedBox(height: 10),
-            TextField(
-                controller: bank,
-                decoration: const InputDecoration(labelText: 'Банк')),
-            const SizedBox(height: 10),
-            DropdownButtonFormField<String>(
-                value: currency,
-                decoration: const InputDecoration(labelText: 'Валюта'),
-                items: const ['BYN', 'RUB', 'USD', 'EUR']
-                    .map((item) =>
-                        DropdownMenuItem(value: item, child: Text(item)))
-                    .toList(),
-                onChanged: (value) => setState(() => currency = value!)),
-            const SizedBox(height: 10),
-            TextField(
-                controller: lastFour,
-                keyboardType: TextInputType.number,
-                maxLength: 4,
-                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                decoration: const InputDecoration(
-                    labelText: 'Последние 4 цифры', counterText: '')),
-            const SizedBox(height: 10),
-            TextField(
-                controller: expiry,
-                keyboardType: TextInputType.datetime,
-                decoration: const InputDecoration(
-                    labelText: 'Срок действия', hintText: 'MM/YY')),
-            const SizedBox(height: 22),
-            SizedBox(
-                width: double.infinity,
-                child: FilledButton(
-                    onPressed: () {
-                      if (title.text.trim().isEmpty ||
-                          bank.text.trim().isEmpty ||
-                          !RegExp(r'^\d{4}$')
-                              .hasMatch(lastFour.text.trim())) {
-                        _showNotice(
-                            context, 'Укажите название, банк и 4 цифры карты');
-                        return;
-                      }
-                      Navigator.pop(
-                          context,
-                          CardDetails(
-                              title.text.trim(),
-                              bank.text.trim(),
-                              currency,
-                              lastFour.text.trim(),
-                              expiry.text.trim()));
-                    },
-                    child: const Text('Сохранить'))),
-          ])),
+        child: SafeArea(
+          top: false,
+          child: Container(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * .88,
+            ),
+            decoration: const BoxDecoration(
+                color: _surfaceHigh,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28))),
+            child: SingleChildScrollView(
+                keyboardDismissBehavior:
+                    ScrollViewKeyboardDismissBehavior.onDrag,
+                padding: const EdgeInsets.fromLTRB(20, 14, 20, 28),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Container(
+                      width: 36,
+                      height: 4,
+                      decoration: BoxDecoration(
+                          color: _muted,
+                          borderRadius: BorderRadius.circular(8))),
+                  const SizedBox(height: 20),
+                  Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                          widget.card == null
+                              ? 'Реквизиты карты'
+                              : 'Редактировать карту',
+                          style: const TextStyle(
+                              fontSize: 21, fontWeight: FontWeight.w800))),
+                  const SizedBox(height: 16),
+                  TextField(
+                      controller: title,
+                      textInputAction: TextInputAction.next,
+                      decoration:
+                          const InputDecoration(labelText: 'Название карты')),
+                  const SizedBox(height: 10),
+                  TextField(
+                      controller: bank,
+                      textInputAction: TextInputAction.next,
+                      decoration: const InputDecoration(labelText: 'Банк')),
+                  const SizedBox(height: 10),
+                  DropdownButtonFormField<String>(
+                      value: currency,
+                      decoration: const InputDecoration(labelText: 'Валюта'),
+                      items: const ['BYN', 'RUB', 'USD', 'EUR']
+                          .map((item) =>
+                              DropdownMenuItem(value: item, child: Text(item)))
+                          .toList(),
+                      onChanged: (value) => setState(() => currency = value!)),
+                  const SizedBox(height: 10),
+                  TextField(
+                      controller: number,
+                      keyboardType: TextInputType.number,
+                      textInputAction: TextInputAction.next,
+                      enableSuggestions: false,
+                      autocorrect: false,
+                      enableIMEPersonalizedLearning: false,
+                      maxLength: 19,
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      decoration: const InputDecoration(
+                          labelText: 'Номер карты',
+                          hintText: '16–19 цифр',
+                          counterText: '')),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: cvv,
+                    keyboardType: TextInputType.number,
+                    textInputAction: TextInputAction.next,
+                    obscureText: !_cvvVisible,
+                    enableSuggestions: false,
+                    autocorrect: false,
+                    enableInteractiveSelection: false,
+                    maxLength: 4,
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    decoration: InputDecoration(
+                      labelText: 'CVV / CVC',
+                      hintText: '3–4 цифры',
+                      counterText: '',
+                      helperText: 'Не сохраняется в приложении',
+                      suffixIcon: IconButton(
+                        tooltip: _cvvVisible ? 'Скрыть CVV' : 'Показать CVV',
+                        onPressed: () =>
+                            setState(() => _cvvVisible = !_cvvVisible),
+                        icon: Icon(_cvvVisible
+                            ? Icons.visibility_off_outlined
+                            : Icons.visibility_outlined),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                      controller: expiry,
+                      keyboardType: TextInputType.datetime,
+                      textInputAction: TextInputAction.done,
+                      decoration: const InputDecoration(
+                          labelText: 'Срок действия', hintText: 'MM/YY')),
+                  const SizedBox(height: 22),
+                  SizedBox(
+                      width: double.infinity,
+                      child: FilledButton(
+                          onPressed: () {
+                            if (title.text.trim().isEmpty ||
+                                bank.text.trim().isEmpty ||
+                                !RegExp(r'^\d{12,19}$')
+                                    .hasMatch(number.text.trim()) ||
+                                (cvv.text.isNotEmpty &&
+                                    !RegExp(r'^\d{3,4}$')
+                                        .hasMatch(cvv.text.trim()))) {
+                              _showNotice(context,
+                                  'Укажите название, банк и номер карты');
+                              return;
+                            }
+                            Navigator.pop(
+                                context,
+                                CardDetails(
+                                    title.text.trim(),
+                                    bank.text.trim(),
+                                    currency,
+                                    number.text.trim(),
+                                    expiry.text.trim()));
+                          },
+                          child: const Text('Сохранить'))),
+                ])),
+          ),
         ),
       );
 }
@@ -2797,18 +2972,20 @@ class Legend extends StatelessWidget {
 class ExpenseDonut extends StatelessWidget {
   const ExpenseDonut({super.key});
   @override
-  Widget build(BuildContext context) => CustomPaint(
-        painter: _DonutPainter(),
-        child: const Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                '1 282',
-                style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
-              ),
-              Text('BYN', style: TextStyle(fontSize: 10, color: _muted)),
-            ],
+  Widget build(BuildContext context) => RepaintBoundary(
+        child: CustomPaint(
+          painter: _DonutPainter(),
+          child: const Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '1 282',
+                  style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+                ),
+                Text('BYN', style: TextStyle(fontSize: 10, color: _muted)),
+              ],
+            ),
           ),
         ),
       );
@@ -2849,8 +3026,10 @@ class _DonutPainter extends CustomPainter {
 class BalanceChart extends StatelessWidget {
   const BalanceChart({super.key});
   @override
-  Widget build(BuildContext context) =>
-      CustomPaint(painter: _LinePainter(), child: const SizedBox.expand());
+  Widget build(BuildContext context) => RepaintBoundary(
+        child: CustomPaint(
+            painter: _LinePainter(), child: const SizedBox.expand()),
+      );
 }
 
 class _LinePainter extends CustomPainter {
@@ -2937,187 +3116,198 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
     final surface = widget.dark ? const Color(0xFF202632) : Colors.white;
     return Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
-        decoration: BoxDecoration(
-          color: surface,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 36,
-              height: 4,
-              decoration: BoxDecoration(
-                color: _muted.withValues(alpha: .5),
-                borderRadius: BorderRadius.circular(8),
-              ),
-            ),
-            const SizedBox(height: 20),
-            Row(
+      child: SafeArea(
+        top: false,
+        child: Container(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(context).height * .88,
+          ),
+          decoration: BoxDecoration(
+            color: surface,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+          ),
+          child: SingleChildScrollView(
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  'Новая операция',
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleLarge
-                      ?.copyWith(fontWeight: FontWeight.w800),
-                ),
-                const Spacer(),
-                IconButton(
-                  onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.close_rounded),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            PillSelector<TransactionKind>(
-              value: kind,
-              onChanged: (value) => setState(() => kind = value),
-              options: const [
-                SelectorOption(TransactionKind.expense, 'Расход'),
-                SelectorOption(TransactionKind.income, 'Доход'),
-                SelectorOption(TransactionKind.transfer, 'Перевод'),
-              ],
-            ),
-            const SizedBox(height: 18),
-            TextField(
-              controller: amount,
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
-              ),
-              inputFormatters: [_moneyInputFormatter],
-              autofocus: true,
-              style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800),
-              decoration: const InputDecoration(
-                prefixText: 'BYN  ',
-                hintText: '0,00',
-                border: UnderlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 14),
-            if (kind == TransactionKind.expense) ...[
-              const SizedBox(height: 16),
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: Text('Категория',
-                    style: TextStyle(fontWeight: FontWeight.w700)),
-              ),
-              ChoiceGrid(
-                  items: widget.categories
-                      .map((item) => SoftChoiceChip(
-                            label: item.name,
-                            icon: item.icon,
-                            color: item.color,
-                            selected: category == item,
-                            onTap: () => setState(() => category = item),
-                          ))
-                      .toList()),
-            ],
-            const SizedBox(height: 14),
-            TextField(
-                controller: title,
-                keyboardType: TextInputType.text,
-                textCapitalization: TextCapitalization.sentences,
-                textInputAction: TextInputAction.done,
-                maxLines: 1,
-                textAlignVertical: TextAlignVertical.center,
-                decoration: const InputDecoration(
-                    labelText: 'Комментарий (необязательно)',
-                    prefixIcon: Icon(Icons.edit_outlined))),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                onPressed: _chooseDate,
-                icon: const Icon(Icons.calendar_today_outlined, size: 17),
-                label: Text(_operationDateLabel(date)),
-              ),
-            ),
-            const SizedBox(height: 16),
-            if (kind == TransactionKind.transfer) ...[
-              AccountChoiceGroup(
-                  label: 'Откуда',
-                  accounts: widget.accounts,
-                  selected: source,
-                  onChanged: (item) => setState(() => source = item)),
-              const SizedBox(height: 14),
-              AccountChoiceGroup(
-                  label: 'Куда',
-                  accounts: widget.accounts,
-                  selected: account,
-                  onChanged: (item) => setState(() => account = item)),
-            ] else if (kind == TransactionKind.income) ...[
-              AccountChoiceGroup(
-                  label: 'Куда поступили',
-                  accounts: widget.accounts,
-                  selected: account,
-                  onChanged: (item) => setState(() => account = item)),
-            ] else
-              AccountChoiceGroup(
-                  label: 'Списать со счёта',
-                  accounts: widget.accounts,
-                  selected: account,
-                  onChanged: (item) => setState(() => account = item)),
-            const SizedBox(height: 23),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton(
-                onPressed: () {
-                  final value = double.tryParse(
-                    amount.text.replaceAll(',', '.'),
-                  );
-                  if (value == null || value == 0) {
-                    _showNotice(context, 'Введите сумму операции');
-                    return;
-                  }
-                  Navigator.pop(
-                    context,
-                    MoneyTransaction(
-                      title.text.trim().isEmpty
-                          ? (kind == TransactionKind.expense
-                              ? category.name
-                              : kind == TransactionKind.income
-                                  ? 'Доход'
-                                  : 'Перевод')
-                          : title.text.trim(),
-                      kind == TransactionKind.transfer
-                          ? '${source.name} → ${account.name}'
-                          : '${account.name} · ${_operationDateLabel(date)}',
-                      kind == TransactionKind.expense ? -value : value,
-                      kind == TransactionKind.expense
-                          ? category.icon
-                          : kind == TransactionKind.income
-                              ? Icons.account_balance_rounded
-                              : Icons.swap_horiz_rounded,
-                      kind == TransactionKind.expense
-                          ? category.color
-                          : kind == TransactionKind.income
-                              ? _mint
-                              : _amber,
-                      kind: kind,
-                      account: account.name,
-                      fromAccount:
-                          kind == TransactionKind.transfer ? source.name : null,
-                      date: date,
-                    ),
-                  );
-                },
-                style: FilledButton.styleFrom(
-                  backgroundColor: _amber,
-                  foregroundColor: _navy,
-                  padding: const EdgeInsets.symmetric(vertical: 17),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
+                Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: _muted.withValues(alpha: .5),
+                    borderRadius: BorderRadius.circular(8),
                   ),
                 ),
-                child: const Text(
-                  'Сохранить операцию',
-                  style: TextStyle(fontWeight: FontWeight.w800),
+                const SizedBox(height: 20),
+                Row(
+                  children: [
+                    Text(
+                      'Новая операция',
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleLarge
+                          ?.copyWith(fontWeight: FontWeight.w800),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ],
                 ),
-              ),
+                const SizedBox(height: 12),
+                PillSelector<TransactionKind>(
+                  value: kind,
+                  onChanged: (value) => setState(() => kind = value),
+                  options: const [
+                    SelectorOption(TransactionKind.expense, 'Расход'),
+                    SelectorOption(TransactionKind.income, 'Доход'),
+                    SelectorOption(TransactionKind.transfer, 'Перевод'),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                TextField(
+                  controller: amount,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  inputFormatters: [_moneyInputFormatter],
+                  autofocus: true,
+                  style: const TextStyle(
+                      fontSize: 28, fontWeight: FontWeight.w800),
+                  decoration: const InputDecoration(
+                    prefixText: 'BYN  ',
+                    hintText: '0,00',
+                    border: UnderlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                if (kind == TransactionKind.expense) ...[
+                  const SizedBox(height: 16),
+                  const Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text('Категория',
+                        style: TextStyle(fontWeight: FontWeight.w700)),
+                  ),
+                  ChoiceGrid(
+                      items: widget.categories
+                          .map((item) => SoftChoiceChip(
+                                label: item.name,
+                                icon: item.icon,
+                                color: item.color,
+                                selected: category == item,
+                                onTap: () => setState(() => category = item),
+                              ))
+                          .toList()),
+                ],
+                const SizedBox(height: 14),
+                TextField(
+                    controller: title,
+                    keyboardType: TextInputType.text,
+                    textCapitalization: TextCapitalization.sentences,
+                    textInputAction: TextInputAction.done,
+                    maxLines: 1,
+                    textAlignVertical: TextAlignVertical.center,
+                    decoration: const InputDecoration(
+                        labelText: 'Комментарий (необязательно)',
+                        prefixIcon: Icon(Icons.edit_outlined))),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: _chooseDate,
+                    icon: const Icon(Icons.calendar_today_outlined, size: 17),
+                    label: Text(_operationDateLabel(date)),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                if (kind == TransactionKind.transfer) ...[
+                  AccountChoiceGroup(
+                      label: 'Откуда',
+                      accounts: widget.accounts,
+                      selected: source,
+                      onChanged: (item) => setState(() => source = item)),
+                  const SizedBox(height: 14),
+                  AccountChoiceGroup(
+                      label: 'Куда',
+                      accounts: widget.accounts,
+                      selected: account,
+                      onChanged: (item) => setState(() => account = item)),
+                ] else if (kind == TransactionKind.income) ...[
+                  AccountChoiceGroup(
+                      label: 'Куда поступили',
+                      accounts: widget.accounts,
+                      selected: account,
+                      onChanged: (item) => setState(() => account = item)),
+                ] else
+                  AccountChoiceGroup(
+                      label: 'Списать со счёта',
+                      accounts: widget.accounts,
+                      selected: account,
+                      onChanged: (item) => setState(() => account = item)),
+                const SizedBox(height: 23),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton(
+                    onPressed: () {
+                      final value = double.tryParse(
+                        amount.text.replaceAll(',', '.'),
+                      );
+                      if (value == null || value == 0) {
+                        _showNotice(context, 'Введите сумму операции');
+                        return;
+                      }
+                      Navigator.pop(
+                        context,
+                        MoneyTransaction(
+                          title.text.trim().isEmpty
+                              ? (kind == TransactionKind.expense
+                                  ? category.name
+                                  : kind == TransactionKind.income
+                                      ? 'Доход'
+                                      : 'Перевод')
+                              : title.text.trim(),
+                          kind == TransactionKind.transfer
+                              ? '${source.name} → ${account.name}'
+                              : '${account.name} · ${_operationDateLabel(date)}',
+                          kind == TransactionKind.expense ? -value : value,
+                          kind == TransactionKind.expense
+                              ? category.icon
+                              : kind == TransactionKind.income
+                                  ? Icons.account_balance_rounded
+                                  : Icons.swap_horiz_rounded,
+                          kind == TransactionKind.expense
+                              ? category.color
+                              : kind == TransactionKind.income
+                                  ? _mint
+                                  : _amber,
+                          kind: kind,
+                          account: account.name,
+                          fromAccount: kind == TransactionKind.transfer
+                              ? source.name
+                              : null,
+                          date: date,
+                        ),
+                      );
+                    },
+                    style: FilledButton.styleFrom(
+                      backgroundColor: _amber,
+                      foregroundColor: _navy,
+                      padding: const EdgeInsets.symmetric(vertical: 17),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                    ),
+                    child: const Text(
+                      'Сохранить операцию',
+                      style: TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -3577,7 +3767,7 @@ class _Card extends StatelessWidget {
         decoration: BoxDecoration(
           color: _surface,
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: Colors.white.withValues(alpha: .055)),
+          border: Border.all(color: Colors.white.withValues(alpha: .045)),
         ),
         child: child,
       );
@@ -3593,10 +3783,10 @@ class _SectionTitle extends StatelessWidget {
           Text(
             title,
             style: const TextStyle(
-              fontFamily: 'serif',
               fontSize: 19,
-              fontWeight: FontWeight.w800,
-              letterSpacing: -0.3,
+              height: 1.05,
+              fontWeight: FontWeight.w600,
+              letterSpacing: -.55,
             ),
           ),
           const Spacer(),
@@ -3628,32 +3818,33 @@ class _NavBar extends StatelessWidget {
       (Icons.sell_outlined, Icons.sell_rounded, 'Категории'),
       (Icons.insights_outlined, Icons.insights_rounded, 'Аналитика'),
     ];
-    return Container(
-      decoration: BoxDecoration(
-        color: _surface,
-        border: Border(
-          top: BorderSide(color: Colors.white.withValues(alpha: .06)),
-        ),
-      ),
+    return ColoredBox(
+      color: _navy,
       child: SafeArea(
         top: false,
-        child: SizedBox(
-          height: 72,
+        child: Container(
+          height: 68,
+          margin: const EdgeInsets.fromLTRB(12, 4, 12, 10),
+          decoration: BoxDecoration(
+            color: _surface,
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: Colors.white.withValues(alpha: .055)),
+          ),
           child: Row(
             children: List.generate(items.length, (i) {
               final current = index == i;
               return Expanded(
                 child: InkWell(
                   onTap: () => onChanged(i),
-                  borderRadius: BorderRadius.circular(16),
+                  borderRadius: BorderRadius.circular(20),
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       AnimatedContainer(
-                        duration: const Duration(milliseconds: 220),
-                        curve: Curves.easeOutCubic,
+                        duration: _quickMotion,
+                        curve: _motionCurve,
                         width: current ? 42 : 34,
-                        height: 30,
+                        height: 29,
                         alignment: Alignment.center,
                         decoration: BoxDecoration(
                           color: current
@@ -3662,18 +3853,19 @@ class _NavBar extends StatelessWidget {
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: AnimatedScale(
-                          duration: const Duration(milliseconds: 180),
-                          scale: current ? 1 : .9,
+                          duration: const Duration(milliseconds: 140),
+                          curve: _motionCurve,
+                          scale: current ? 1 : .92,
                           child: Icon(
                             current ? items[i].$2 : items[i].$1,
                             color: current ? _amber : _muted,
-                            size: 21,
+                            size: 20,
                           ),
                         ),
                       ),
-                      const SizedBox(height: 4),
+                      const SizedBox(height: 3),
                       AnimatedDefaultTextStyle(
-                        duration: const Duration(milliseconds: 180),
+                        duration: const Duration(milliseconds: 140),
                         style: TextStyle(
                           fontSize: 10,
                           fontWeight:
@@ -3799,18 +3991,21 @@ class FinanceCategory {
 }
 
 class CardDetails {
-  CardDetails(this.title, this.bank, this.currency, this.lastFour, this.expiry);
+  CardDetails(this.title, this.bank, this.currency, this.number, this.expiry);
   String title;
   String bank;
   String currency;
-  String lastFour;
+  String number;
   String expiry;
+
+  String get lastFour => _lastFour(number);
+  bool get hasFullNumber => RegExp(r'^\d{12,19}$').hasMatch(number);
 
   Map<String, dynamic> toJson() => {
         'title': title,
         'bank': bank,
         'currency': currency,
-        'lastFour': lastFour,
+        'number': number,
         'expiry': expiry,
       };
 
@@ -3818,8 +4013,7 @@ class CardDetails {
         json['title'] as String? ?? 'Карта',
         json['bank'] as String? ?? '',
         json['currency'] as String? ?? 'BYN',
-        (json['lastFour'] as String? ??
-                _lastFour(json['number'] as String? ?? ''))
+        (json['number'] as String? ?? json['lastFour'] as String? ?? '')
             .replaceAll(RegExp(r'[^0-9]'), ''),
         json['expiry'] as String? ?? '',
       );
@@ -3828,7 +4022,8 @@ class CardDetails {
 class AppStorage {
   static const _dataKey = 'coinly_data_v2';
   static const _legacyDataKey = 'coinly_data_v1';
-  static const _cardsKey = 'coinly_card_details_v2';
+  static const _cardsKey = 'coinly_card_details_v3';
+  static const _previousCardsKey = 'coinly_card_details_v2';
   static const _legacyCardsKey = 'coinly_card_details_v1';
   static const _pinHashKey = 'coinly_pin_hash_v1';
   static const _pinSaltKey = 'coinly_pin_salt_v1';
@@ -3873,19 +4068,21 @@ class AppStorage {
   Future<List<CardDetails>?> loadCards() async {
     try {
       final currentSource = await _secure.read(key: _cardsKey);
-      final legacySource = currentSource == null
+      final previousSource = currentSource == null
+          ? await _secure.read(key: _previousCardsKey)
+          : null;
+      final legacySource = currentSource == null && previousSource == null
           ? await _secure.read(key: _legacyCardsKey)
           : null;
-      final source = currentSource ?? legacySource;
+      final source = currentSource ?? previousSource ?? legacySource;
       if (source == null) return null;
       final decoded = jsonDecode(source) as List<dynamic>;
       final cards = decoded
           .whereType<Map>()
           .map((item) => CardDetails.fromJson(Map<String, dynamic>.from(item)))
           .toList();
-      if (legacySource != null) {
-        // Persist the sanitised format immediately so full PAN and CVV values
-        // from older releases cannot remain in protected storage indefinitely.
+      if (currentSource == null) {
+        // Keep card data only in the current protected-storage record.
         await saveCards(cards);
       }
       return cards;
@@ -3899,8 +4096,7 @@ class AppStorage {
       key: _cardsKey,
       value: jsonEncode(cards.map((card) => card.toJson()).toList()),
     );
-    // Remove legacy records containing full card numbers and CVV as soon as
-    // current data is saved.
+    await _secure.delete(key: _previousCardsKey);
     await _secure.delete(key: _legacyCardsKey);
   }
 
@@ -3954,8 +4150,8 @@ class AppStorage {
 
   Future<void> _storePin(String pin) async {
     final random = math.Random.secure();
-    final salt = base64UrlEncode(
-        List<int>.generate(32, (_) => random.nextInt(256)));
+    final salt =
+        base64UrlEncode(List<int>.generate(32, (_) => random.nextInt(256)));
     await _secure.write(key: _pinSaltKey, value: salt);
     await _secure.write(
         key: _pinHashKey, value: 'v2:${await _derivePinHash(salt, pin)}');
@@ -3996,9 +4192,8 @@ class AppStorage {
 
   Future<Duration?> pinLockRemaining() async {
     try {
-      final lockUntil = int.tryParse(
-              await _secure.read(key: _pinLockUntilKey) ?? '0') ??
-          0;
+      final lockUntil =
+          int.tryParse(await _secure.read(key: _pinLockUntilKey) ?? '0') ?? 0;
       final milliseconds = lockUntil - DateTime.now().millisecondsSinceEpoch;
       if (milliseconds <= 0) return null;
       return Duration(milliseconds: milliseconds);
@@ -4013,8 +4208,8 @@ class AppStorage {
   Future<void> _recordFailedPinAttempt() async {
     final failures =
         (int.tryParse(await _secure.read(key: _failedPinAttemptsKey) ?? '0') ??
-               0) +
-           1;
+                0) +
+            1;
     if (failures >= 5) {
       await _secure.write(
         key: _pinLockUntilKey,
