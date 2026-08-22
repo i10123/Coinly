@@ -1958,7 +1958,7 @@ class DashboardPage extends StatelessWidget {
               Expanded(
                 child: MiniStat(
                   label: 'Доходы',
-                  value: '+ ${_money(income)} $_displayCurrency',
+                  value: '+ ${_money(income)}',
                   icon: Icons.south_west_rounded,
                   color: _mint,
                 ),
@@ -1967,7 +1967,7 @@ class DashboardPage extends StatelessWidget {
               Expanded(
                 child: MiniStat(
                   label: 'Расходы',
-                  value: '− ${_money(expenses)} $_displayCurrency',
+                  value: '− ${_money(expenses)}',
                   icon: Icons.north_east_rounded,
                   color: _coral,
                 ),
