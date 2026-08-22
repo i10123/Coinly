@@ -14,6 +14,7 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final storage = AppStorage();
   await storage.resetPinForFourDigitMigration();
+  await storage.recoverPendingFinancialClear();
   final startupValues = await Future.wait<Object?>([
     storage.loadData(),
     storage.loadCards(),
@@ -43,6 +44,8 @@ const _ink = Color(0xFFF7F4EE);
 const _muted = Color(0xFF9FA9B8);
 const _motionCurve = Cubic(.22, 1, .36, 1);
 const _quickMotion = Duration(milliseconds: 180);
+const _supportedCurrencies = ['BYN', 'RUB', 'USD', 'EUR'];
+String _displayCurrency = 'BYN';
 final _moneyInputFormatter = TextInputFormatter.withFunction(
   (oldValue, newValue) =>
       RegExp(r'^\d{0,12}([,.]\d{0,2})?$').hasMatch(newValue.text)
@@ -411,6 +414,7 @@ class _CoinlyHomeState extends State<CoinlyHome> {
   late List<FinanceCategory> _categories;
   late List<CardDetails> _cards;
   late List<SavingsGoal> _goals;
+  late String _currency;
 
   @override
   void initState() {
@@ -421,6 +425,8 @@ class _CoinlyHomeState extends State<CoinlyHome> {
     _accounts = data.accounts;
     _categories = data.categories;
     _goals = data.goals;
+    _currency = data.currency;
+    _displayCurrency = _currency;
     _cards = widget.initialCards ?? AppData.defaultCards();
     if (widget.initialData == null || widget.initialCards == null) _persist();
   }
@@ -432,6 +438,7 @@ class _CoinlyHomeState extends State<CoinlyHome> {
       accounts: _accounts,
       categories: _categories,
       goals: _goals,
+      currency: _currency,
     );
     await Future.wait([
       widget.storage.saveData(data),
@@ -441,7 +448,11 @@ class _CoinlyHomeState extends State<CoinlyHome> {
 
   Future<void> _addTransaction(
       [TransactionKind initial = TransactionKind.expense]) async {
-    final created = await showModalBottomSheet<MoneyTransaction>(
+    if (_accounts.isEmpty) {
+      _showNotice(context, 'Сначала добавьте счёт');
+      return;
+    }
+    final result = await showModalBottomSheet<TransactionEditorResult>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -452,18 +463,78 @@ class _CoinlyHomeState extends State<CoinlyHome> {
         categories: _categories,
       ),
     );
+    final created = result?.transaction;
     if (created == null) return;
     setState(() {
       _transactions.insert(0, created);
-      if (created.kind == TransactionKind.transfer) {
-        _accountByName(created.fromAccount)?.balance -= created.amount;
-        _accountByName(created.account)?.balance += created.amount;
-      } else {
-        _accountByName(created.account)?.balance += created.amount;
-        _balance += created.amount;
-      }
+      _applyTransaction(created);
     });
     await _persist();
+  }
+
+  Future<void> _editTransaction(MoneyTransaction transaction) async {
+    final result = await showModalBottomSheet<TransactionEditorResult>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => AddTransactionSheet(
+        dark: widget.dark,
+        initial: transaction.kind,
+        accounts: _accounts,
+        categories: _categories,
+        transaction: transaction,
+      ),
+    );
+    if (result == null) return;
+    if (!mounted) return;
+    if (result.deleteRequested) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Удалить операцию?'),
+          content: const Text('Это действие нельзя отменить.'),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Отмена')),
+            FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                style: FilledButton.styleFrom(backgroundColor: _coral),
+                child: const Text('Удалить')),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+      setState(() {
+        _applyTransaction(transaction, reverse: true);
+        _transactions.remove(transaction);
+      });
+      await _persist();
+      return;
+    }
+    final updated = result.transaction;
+    if (updated == null) return;
+    setState(() {
+      _applyTransaction(transaction, reverse: true);
+      final index = _transactions.indexOf(transaction);
+      if (index != -1) _transactions[index] = updated;
+      _applyTransaction(updated);
+    });
+    await _persist();
+  }
+
+  void _applyTransaction(MoneyTransaction transaction, {bool reverse = false}) {
+    final multiplier = reverse ? -1 : 1;
+    if (transaction.kind == TransactionKind.transfer) {
+      _accountByName(transaction.fromAccount)?.balance -=
+          transaction.amount * multiplier;
+      _accountByName(transaction.account)?.balance +=
+          transaction.amount * multiplier;
+      return;
+    }
+    _accountByName(transaction.account)?.balance +=
+        transaction.amount * multiplier;
+    _balance += transaction.amount * multiplier;
   }
 
   BudgetAccount? _accountByName(String? name) {
@@ -617,7 +688,11 @@ class _CoinlyHomeState extends State<CoinlyHome> {
         onShowAccounts: () => setState(() => _tab = 2),
         onSettings: _openSettings,
       ),
-      TransactionsPage(transactions: _transactions, onAdd: _addTransaction),
+      TransactionsPage(
+        transactions: _transactions,
+        onAdd: _addTransaction,
+        onEdit: _editTransaction,
+      ),
       AccountsPage(
           accounts: _accounts,
           cards: _cards,
@@ -668,6 +743,9 @@ class _CoinlyHomeState extends State<CoinlyHome> {
         onSetBiometricsEnabled: widget.onSetBiometricsEnabled,
         onExportData: _exportData,
         onImportData: _importData,
+        currency: _currency,
+        onCurrencyChanged: _changeCurrency,
+        onClearData: _clearData,
       ),
     ));
     if (mounted) setState(() {});
@@ -679,6 +757,7 @@ class _CoinlyHomeState extends State<CoinlyHome> {
         accounts: _accounts,
         categories: _categories,
         goals: _goals,
+        currency: _currency,
       );
 
   Future<void> _exportData() async {
@@ -775,6 +854,8 @@ class _CoinlyHomeState extends State<CoinlyHome> {
         _accounts = imported.accounts;
         _categories = imported.categories;
         _goals = imported.goals;
+        _currency = imported.currency;
+        _displayCurrency = imported.currency;
       });
       await _persist();
       if (mounted) _showNotice(context, 'Данные импортированы');
@@ -832,6 +913,64 @@ class _CoinlyHomeState extends State<CoinlyHome> {
     }
     return result;
   }
+
+  Future<void> _changeCurrency(String currency) async {
+    setState(() {
+      _currency = currency;
+      _displayCurrency = currency;
+    });
+    await _persist();
+  }
+
+  Future<void> _clearData() async {
+    final firstConfirmation = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Очистить данные приложения?'),
+        content: const Text(
+          'Будут удалены операции, счета, цели и реквизиты карт. Рекомендуем сначала сделать экспорт данных.',
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Отмена')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: FilledButton.styleFrom(backgroundColor: _coral),
+              child: const Text('Продолжить')),
+        ],
+      ),
+    );
+    if (firstConfirmation != true || !mounted) return;
+    final secondConfirmation = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Подтвердите очищение'),
+        content: const Text('Восстановить удалённые данные будет нельзя.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Отмена')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: FilledButton.styleFrom(backgroundColor: _coral),
+              child: const Text('Очистить всё')),
+        ],
+      ),
+    );
+    if (secondConfirmation != true || !mounted) return;
+    final empty = AppData.empty(currency: _currency);
+    setState(() {
+      _transactions = empty.transactions;
+      _balance = empty.balance;
+      _accounts = empty.accounts;
+      _categories = empty.categories;
+      _goals = empty.goals;
+      _cards = [];
+    });
+    await widget.storage.clearFinancialData(empty);
+    if (mounted) _showNotice(context, 'Данные приложения очищены');
+  }
 }
 
 class SettingsPage extends StatefulWidget {
@@ -846,6 +985,9 @@ class SettingsPage extends StatefulWidget {
     required this.onSetBiometricsEnabled,
     required this.onExportData,
     required this.onImportData,
+    required this.currency,
+    required this.onCurrencyChanged,
+    required this.onClearData,
   });
 
   final bool hasPin;
@@ -857,6 +999,9 @@ class SettingsPage extends StatefulWidget {
   final Future<void> Function(bool enabled) onSetBiometricsEnabled;
   final Future<void> Function() onExportData;
   final Future<void> Function() onImportData;
+  final String currency;
+  final Future<void> Function(String currency) onCurrencyChanged;
+  final Future<void> Function() onClearData;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -868,12 +1013,14 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _biometricsAvailable = false;
   bool _checkingBiometrics = true;
   bool _handlingBackup = false;
+  late String _currency;
 
   @override
   void initState() {
     super.initState();
     _hasPin = widget.hasPin;
     _biometricsEnabled = widget.biometricsEnabled;
+    _currency = widget.currency;
     _checkBiometrics();
   }
 
@@ -951,6 +1098,34 @@ class _SettingsPageState extends State<SettingsPage> {
     setState(() => _handlingBackup = true);
     await action();
     if (mounted) setState(() => _handlingBackup = false);
+  }
+
+  Future<void> _selectCurrency() async {
+    final selected = await showDialog<String>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('Основная валюта'),
+        children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(24, 0, 24, 8),
+            child: Text('Смена валюты не конвертирует уже введённые суммы.',
+                style: TextStyle(color: _muted, fontSize: 12)),
+          ),
+          ..._supportedCurrencies.map((currency) => SimpleDialogOption(
+                onPressed: () => Navigator.pop(context, currency),
+                child: Row(children: [
+                  Text(currency),
+                  const Spacer(),
+                  if (currency == _currency)
+                    const Icon(Icons.check_rounded, color: _amber),
+                ]),
+              )),
+        ],
+      ),
+    );
+    if (selected == null || selected == _currency) return;
+    setState(() => _currency = selected);
+    await widget.onCurrencyChanged(selected);
   }
 
   @override
@@ -1058,6 +1233,14 @@ class _SettingsPageState extends State<SettingsPage> {
                               fontWeight: FontWeight.w800)),
                       const SizedBox(height: 10),
                       _SettingsRow(
+                        icon: Icons.currency_exchange_rounded,
+                        color: const Color(0xFFC7A7FF),
+                        title: 'Основная валюта',
+                        subtitle: _currency,
+                        onTap: _selectCurrency,
+                      ),
+                      const SizedBox(height: 10),
+                      _SettingsRow(
                         icon: Icons.file_upload_outlined,
                         color: _mint,
                         title: 'Экспортировать данные',
@@ -1082,10 +1265,19 @@ class _SettingsPageState extends State<SettingsPage> {
                         style: TextStyle(
                             color: _muted, fontSize: 12, height: 1.45),
                       ),
+                      const SizedBox(height: 22),
+                      _SettingsRow(
+                        icon: Icons.delete_forever_outlined,
+                        color: _coral,
+                        title: 'Очистить данные приложения',
+                        subtitle: 'Рекомендуем сначала экспортировать данные',
+                        onTap: widget.onClearData,
+                      ),
                     ],
                   ),
                 ),
               ),
+              //noinspection SpellCheckingInspection
               const Padding(
                 padding: EdgeInsets.fromLTRB(20, 8, 20, 18),
                 child: Text(
@@ -1863,7 +2055,9 @@ class _BalanceCardState extends State<BalanceCard> {
                 ),
               ),
               child: Text(
-                visible ? '${_money(widget.balance)} BYN' : '•••••• BYN',
+                visible
+                    ? '${_money(widget.balance)} $_displayCurrency'
+                    : '•••••• $_displayCurrency',
                 key: ValueKey(visible),
                 style: const TextStyle(
                   fontSize: 33,
@@ -2112,11 +2306,11 @@ class _SavingsGoalCard extends StatelessWidget {
               ),
               const SizedBox(height: 10),
               Row(children: [
-                Text('${_money(goal.saved)} BYN',
+                Text('${_money(goal.saved)} $_displayCurrency',
                     style: const TextStyle(
                         fontWeight: FontWeight.w800, fontSize: 16)),
                 const Text(' из ', style: TextStyle(color: _muted)),
-                Text('${_money(goal.target)} BYN',
+                Text('${_money(goal.target)} $_displayCurrency',
                     style: const TextStyle(color: _muted, fontSize: 13)),
                 const Spacer(),
                 const Icon(Icons.edit_outlined, size: 17, color: _muted),
@@ -2194,7 +2388,7 @@ class AccountsOverview extends StatelessWidget {
                         ),
                       ),
                       const Spacer(),
-                      Text('${_money(account.balance)} BYN',
+                      Text('${_money(account.balance)} $_displayCurrency',
                           style: const TextStyle(
                               fontWeight: FontWeight.w800, fontSize: 14)),
                     ]),
@@ -2234,7 +2428,7 @@ class MiniStat extends StatelessWidget {
             Text(label, style: const TextStyle(color: _muted, fontSize: 12)),
             const SizedBox(height: 3),
             Text(
-              '$value BYN',
+              '$value $_displayCurrency',
               style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
             ),
           ],
@@ -2510,9 +2704,11 @@ class TransactionsPage extends StatefulWidget {
     super.key,
     required this.transactions,
     required this.onAdd,
+    required this.onEdit,
   });
   final List<MoneyTransaction> transactions;
   final ValueChanged<TransactionKind> onAdd;
+  final ValueChanged<MoneyTransaction> onEdit;
   @override
   State<TransactionsPage> createState() => _TransactionsPageState();
 }
@@ -2628,7 +2824,8 @@ class _TransactionsPageState extends State<TransactionsPage> {
             ),
           ),
           const SizedBox(height: 5),
-          ...visibleTransactions.map((item) => TransactionTile(item: item)),
+          ...visibleTransactions.map((item) =>
+              TransactionTile(item: item, onTap: () => widget.onEdit(item))),
         ],
       ),
     );
@@ -2645,7 +2842,7 @@ class _Total extends StatelessWidget {
           Text(text, style: const TextStyle(fontSize: 12, color: _muted)),
           const SizedBox(height: 3),
           Text(
-            '$amount BYN',
+            '$amount $_displayCurrency',
             style: TextStyle(color: color, fontWeight: FontWeight.w800),
           ),
         ],
@@ -2653,43 +2850,48 @@ class _Total extends StatelessWidget {
 }
 
 class TransactionTile extends StatelessWidget {
-  const TransactionTile({super.key, required this.item});
+  const TransactionTile({super.key, required this.item, this.onTap});
   final MoneyTransaction item;
+  final VoidCallback? onTap;
   @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 10),
-        child: Row(children: [
-          Container(
-              width: 46,
-              height: 46,
-              decoration: BoxDecoration(
-                  color: item.color.withValues(alpha: .14),
-                  borderRadius: BorderRadius.circular(15)),
-              child: Icon(item.icon, color: item.color)),
-          const SizedBox(width: 12),
-          Expanded(
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                Text(item.title,
-                    style: const TextStyle(fontWeight: FontWeight.w700)),
-                const SizedBox(height: 4),
-                Text(item.subtitle,
-                    style: const TextStyle(color: _muted, fontSize: 12))
-              ])),
-          Text(
-              item.kind == TransactionKind.transfer
-                  ? '${_money(item.amount)}\nBYN'
-                  : '${item.amount > 0 ? '+' : '−'}${_money(item.amount.abs())}\nBYN',
-              textAlign: TextAlign.right,
-              style: TextStyle(
-                  fontWeight: FontWeight.w800,
-                  color: item.kind == TransactionKind.transfer
-                      ? _amber
-                      : item.amount > 0
-                          ? _mint
-                          : _ink)),
-        ]),
+  Widget build(BuildContext context) => InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Row(children: [
+            Container(
+                width: 46,
+                height: 46,
+                decoration: BoxDecoration(
+                    color: item.color.withValues(alpha: .14),
+                    borderRadius: BorderRadius.circular(15)),
+                child: Icon(item.icon, color: item.color)),
+            const SizedBox(width: 12),
+            Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                  Text(item.title,
+                      style: const TextStyle(fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 4),
+                  Text(item.subtitle,
+                      style: const TextStyle(color: _muted, fontSize: 12))
+                ])),
+            Text(
+                item.kind == TransactionKind.transfer
+                    ? '${_money(item.amount)}\n$_displayCurrency'
+                    : '${item.amount > 0 ? '+' : '−'}${_money(item.amount.abs())}\n$_displayCurrency',
+                textAlign: TextAlign.right,
+                style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    color: item.kind == TransactionKind.transfer
+                        ? _amber
+                        : item.amount > 0
+                            ? _mint
+                            : _ink)),
+          ]),
+        ),
       );
 }
 
@@ -2789,7 +2991,7 @@ class AccountCard extends StatelessWidget {
                 Text(account.type,
                     style: const TextStyle(color: _muted, fontSize: 12))
               ])),
-          Text('${_money(account.balance)}\nBYN',
+          Text('${_money(account.balance)}\n$_displayCurrency',
               textAlign: TextAlign.right,
               style: const TextStyle(fontWeight: FontWeight.w800)),
         ]),
@@ -2929,7 +3131,7 @@ class _CardDetailsFormSheetState extends State<CardDetailsFormSheet> {
                       decoration: const InputDecoration(labelText: 'Банк')),
                   const SizedBox(height: 10),
                   DropdownButtonFormField<String>(
-                      value: currency,
+                      initialValue: currency,
                       decoration: const InputDecoration(labelText: 'Валюта'),
                       items: const ['BYN', 'RUB', 'USD', 'EUR']
                           .map((item) =>
@@ -3183,7 +3385,7 @@ class BudgetsPage extends StatelessWidget {
               used: '96,40',
               limit: '200,00',
               value: .48,
-              color: const Color(0xFF92B5FF),
+              color: Color(0xFF92B5FF),
             ),
             const SizedBox(height: 11),
             const BudgetItem(
@@ -3248,7 +3450,7 @@ class BudgetItem extends StatelessWidget {
             Align(
               alignment: Alignment.centerLeft,
               child: Text(
-                '$used из $limit BYN',
+                '$used из $limit $_displayCurrency',
                 style: const TextStyle(color: _muted, fontSize: 12),
               ),
             ),
@@ -3290,7 +3492,7 @@ class AnalyticsPage extends StatelessWidget {
         .where((item) => item.kind == TransactionKind.expense)
         .fold<double>(0, (sum, item) => sum + item.amount.abs());
     final categories = _expenseCategories(monthTransactions);
-    final monthlyData = _monthlyCashflow(transactions, today);
+    final monthlyData = _monthlyFlow(transactions, today);
     return PageFrame(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -3335,14 +3537,14 @@ class AnalyticsPage extends StatelessWidget {
             style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17),
           ),
           const SizedBox(height: 4),
-          const Text(
-            'Последние 6 месяцев · BYN',
+          Text(
+            'Последние 6 месяцев · $_displayCurrency',
             style: TextStyle(color: _muted, fontSize: 12),
           ),
           const SizedBox(height: 13),
           _Card(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 13),
-            child: MonthlyCashflowChart(data: monthlyData),
+            child: MonthlyFlowChart(data: monthlyData),
           ),
           const SizedBox(height: 22),
           _Card(
@@ -3355,8 +3557,8 @@ class AnalyticsPage extends StatelessWidget {
                   style: TextStyle(fontWeight: FontWeight.w800),
                 ),
                 const SizedBox(height: 4),
-                const Text(
-                  'Август 2026 · BYN',
+                Text(
+                  'Август 2026 · $_displayCurrency',
                   style: TextStyle(color: _muted, fontSize: 12),
                 ),
                 const SizedBox(height: 18),
@@ -3378,8 +3580,8 @@ class ExpenseCategoryData {
   final Color color;
 }
 
-class MonthlyCashflowData {
-  const MonthlyCashflowData(this.month, this.income, this.expense);
+class MonthlyFlowData {
+  const MonthlyFlowData(this.month, this.income, this.expense);
 
   final DateTime month;
   final double income;
@@ -3404,7 +3606,7 @@ List<ExpenseCategoryData> _expenseCategories(
   return result;
 }
 
-List<MonthlyCashflowData> _monthlyCashflow(
+List<MonthlyFlowData> _monthlyFlow(
     List<MoneyTransaction> transactions, DateTime today) {
   return List.generate(6, (index) {
     final month = DateTime(today.year, today.month - 5 + index);
@@ -3419,14 +3621,14 @@ List<MonthlyCashflowData> _monthlyCashflow(
         expense += transaction.amount.abs();
       }
     }
-    return MonthlyCashflowData(month, income, expense);
+    return MonthlyFlowData(month, income, expense);
   });
 }
 
-class MonthlyCashflowChart extends StatelessWidget {
-  const MonthlyCashflowChart({super.key, required this.data});
+class MonthlyFlowChart extends StatelessWidget {
+  const MonthlyFlowChart({super.key, required this.data});
 
-  final List<MonthlyCashflowData> data;
+  final List<MonthlyFlowData> data;
 
   @override
   Widget build(BuildContext context) {
@@ -3440,7 +3642,7 @@ class MonthlyCashflowChart extends StatelessWidget {
           children: [
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
-              children: const [
+              children: [
                 _ChartLegend(color: _mint, label: 'Доходы'),
                 SizedBox(width: 11),
                 _ChartLegend(color: _coral, label: 'Расходы'),
@@ -3464,18 +3666,18 @@ class MonthlyCashflowChart extends StatelessWidget {
                                 crossAxisAlignment: CrossAxisAlignment.end,
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
-                                  _CashflowBar(
+                                  _FlowBar(
                                     height: item.income / highest,
                                     color: _mint,
                                     label:
-                                        '${_monthShort(item.month)}: доходы ${_money(item.income)} BYN',
+                                        '${_monthShort(item.month)}: доходы ${_money(item.income)} $_displayCurrency',
                                   ),
                                   const SizedBox(width: 3),
-                                  _CashflowBar(
+                                  _FlowBar(
                                     height: item.expense / highest,
                                     color: _coral,
                                     label:
-                                        '${_monthShort(item.month)}: расходы ${_money(item.expense)} BYN',
+                                        '${_monthShort(item.month)}: расходы ${_money(item.expense)} $_displayCurrency',
                                   ),
                                 ],
                               ),
@@ -3522,8 +3724,8 @@ class _ChartLegend extends StatelessWidget {
       );
 }
 
-class _CashflowBar extends StatelessWidget {
-  const _CashflowBar(
+class _FlowBar extends StatelessWidget {
+  const _FlowBar(
       {required this.height, required this.color, required this.label});
 
   final double height;
@@ -3580,7 +3782,7 @@ class _Metric extends StatelessWidget {
             Text(label, style: const TextStyle(color: _muted, fontSize: 12)),
             const SizedBox(height: 7),
             Text(
-              '$amount BYN',
+              '$amount $_displayCurrency',
               style: TextStyle(
                 color: color,
                 fontWeight: FontWeight.w800,
@@ -3756,8 +3958,8 @@ class ExpenseDonut extends StatelessWidget {
             child: Center(
               child: Semantics(
                 label: selected == null
-                    ? 'Всего расходов ${_money(total)} BYN'
-                    : '${selected.name}: ${_money(selected.amount)} BYN',
+                    ? 'Всего расходов ${_money(total)} $_displayCurrency'
+                    : '${selected.name}: ${_money(selected.amount)} $_displayCurrency',
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -3767,7 +3969,7 @@ class ExpenseDonut extends StatelessWidget {
                           fontWeight: FontWeight.w800, fontSize: 15),
                     ),
                     Text(
-                      selected?.name ?? 'BYN',
+                      selected?.name ?? _displayCurrency,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontSize: 10, color: _muted),
@@ -3901,7 +4103,7 @@ class _BalanceChartState extends State<BalanceChart> {
                                   color: _amber.withValues(alpha: .55)),
                             ),
                             child: Text(
-                              '${point.label} · ${_money(point.balance)} BYN',
+                              '${point.label} · ${_money(point.balance)} $_displayCurrency',
                               style: const TextStyle(
                                   fontSize: 11, fontWeight: FontWeight.w800),
                             ),
@@ -3937,11 +4139,13 @@ class _LinePainter extends CustomPainter {
     final grid = Paint()
       ..color = Colors.white.withValues(alpha: .06)
       ..strokeWidth = 1;
-    for (var y = 20.0; y < s.height; y += 36)
+    for (var y = 20.0; y < s.height; y += 36) {
       c.drawLine(Offset(0, y), Offset(s.width, y), grid);
+    }
     final path = Path()..moveTo(points.first.dx, points.first.dy);
-    for (var i = 1; i < points.length; i++)
+    for (var i = 1; i < points.length; i++) {
       path.lineTo(points[i].dx, points[i].dy);
+    }
     c.drawPath(
       path,
       Paint()
@@ -3971,17 +4175,30 @@ class _LinePainter extends CustomPainter {
       oldDelegate.selected != selected || oldDelegate.points != points;
 }
 
+class TransactionEditorResult {
+  const TransactionEditorResult.save(this.transaction)
+      : deleteRequested = false;
+  const TransactionEditorResult.delete()
+      : transaction = null,
+        deleteRequested = true;
+
+  final MoneyTransaction? transaction;
+  final bool deleteRequested;
+}
+
 class AddTransactionSheet extends StatefulWidget {
   const AddTransactionSheet(
       {super.key,
       required this.dark,
       required this.initial,
       required this.accounts,
-      required this.categories});
+      required this.categories,
+      this.transaction});
   final bool dark;
   final TransactionKind initial;
   final List<BudgetAccount> accounts;
   final List<FinanceCategory> categories;
+  final MoneyTransaction? transaction;
   @override
   State<AddTransactionSheet> createState() => _AddTransactionSheetState();
 }
@@ -3998,12 +4215,31 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
   @override
   void initState() {
     super.initState();
-    kind = widget.initial;
-    account = widget.accounts.first;
-    source =
-        widget.accounts.length > 1 ? widget.accounts[1] : widget.accounts.first;
-    category = widget.categories.first;
-    date = DateTime.now();
+    final transaction = widget.transaction;
+    kind = transaction?.kind ?? widget.initial;
+    account = widget.accounts.firstWhere(
+      (item) => item.name == transaction?.account,
+      orElse: () => widget.accounts.first,
+    );
+    source = widget.accounts.firstWhere(
+      (item) => item.name == transaction?.fromAccount,
+      orElse: () => widget.accounts.length > 1
+          ? widget.accounts[1]
+          : widget.accounts.first,
+    );
+    category = widget.categories.firstWhere(
+      (item) => item.name == transaction?.title,
+      orElse: () => widget.categories.first,
+    );
+    date = transaction == null ? DateTime.now() : _dateOf(transaction);
+    if (transaction != null) {
+      amount.text =
+          transaction.amount.abs().toStringAsFixed(2).replaceAll('.', ',');
+      if (kind != TransactionKind.transfer &&
+          transaction.title != category.name) {
+        title.text = transaction.title;
+      }
+    }
   }
 
   @override
@@ -4045,15 +4281,33 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
                 const SizedBox(height: 20),
                 Row(
                   children: [
-                    Text(
-                      'Новая операция',
-                      style: Theme.of(context)
-                          .textTheme
-                          .titleLarge
-                          ?.copyWith(fontWeight: FontWeight.w800),
+                    Expanded(
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          widget.transaction == null
+                              ? 'Новая операция'
+                              : 'Редактировать операцию',
+                          style: Theme.of(context)
+                              .textTheme
+                              .titleLarge
+                              ?.copyWith(fontWeight: FontWeight.w800),
+                        ),
+                      ),
                     ),
-                    const Spacer(),
+                    const SizedBox(width: 6),
+                    if (widget.transaction != null)
+                      IconButton(
+                        tooltip: 'Удалить операцию',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () => Navigator.pop(
+                            context, const TransactionEditorResult.delete()),
+                        icon: const Icon(Icons.delete_outline_rounded,
+                            color: _coral),
+                      ),
                     IconButton(
+                      visualDensity: VisualDensity.compact,
                       onPressed: () => Navigator.pop(context),
                       icon: const Icon(Icons.close_rounded),
                     ),
@@ -4079,8 +4333,8 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
                   autofocus: true,
                   style: const TextStyle(
                       fontSize: 28, fontWeight: FontWeight.w800),
-                  decoration: const InputDecoration(
-                    prefixText: 'BYN  ',
+                  decoration: InputDecoration(
+                    prefixText: '$_displayCurrency  ',
                     hintText: '0,00',
                     border: UnderlineInputBorder(),
                   ),
@@ -4162,7 +4416,7 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
                       }
                       Navigator.pop(
                         context,
-                        MoneyTransaction(
+                        TransactionEditorResult.save(MoneyTransaction(
                           title.text.trim().isEmpty
                               ? (kind == TransactionKind.expense
                                   ? category.name
@@ -4190,7 +4444,7 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
                               ? source.name
                               : null,
                           date: date,
-                        ),
+                        )),
                       );
                     },
                     style: FilledButton.styleFrom(
@@ -4215,22 +4469,6 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
     );
   }
 
-  Future<void> _chooseAccount({bool from = false}) async {
-    final chosen = await showModalBottomSheet<BudgetAccount>(
-        context: context,
-        backgroundColor: Colors.transparent,
-        builder: (_) => AccountPickerSheet(
-            accounts: widget.accounts, selected: from ? source : account));
-    if (chosen != null)
-      setState(() {
-        if (from) {
-          source = chosen;
-        } else {
-          account = chosen;
-        }
-      });
-  }
-
   Future<void> _chooseDate() async {
     final selected = await showDatePicker(
         context: context,
@@ -4238,16 +4476,6 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
         firstDate: DateTime(2020),
         lastDate: DateTime(2100));
     if (selected != null) setState(() => date = selected);
-  }
-
-  Future<void> _manageCategories() async {
-    await showModalBottomSheet<void>(
-        context: context,
-        isScrollControlled: true,
-        backgroundColor: Colors.transparent,
-        builder: (_) => CategoryManagerSheet(categories: widget.categories));
-    if (widget.categories.isNotEmpty && !widget.categories.contains(category))
-      setState(() => category = widget.categories.first);
   }
 }
 
@@ -4277,39 +4505,6 @@ class AccountChoiceGroup extends StatelessWidget {
                     onTap: () => onChanged(item)))
                 .toList()),
       ]);
-}
-
-class _AccountSelector extends StatelessWidget {
-  const _AccountSelector(
-      {required this.label, required this.account, required this.onTap});
-  final String label;
-  final BudgetAccount account;
-  final VoidCallback onTap;
-  @override
-  Widget build(BuildContext context) => InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(14),
-        child: Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-              color: _surface, borderRadius: BorderRadius.circular(14)),
-          child: Row(children: [
-            Icon(account.icon, size: 19, color: account.color),
-            const SizedBox(width: 9),
-            Expanded(
-                child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                  Text(label,
-                      style: const TextStyle(fontSize: 10, color: _muted)),
-                  const SizedBox(height: 2),
-                  Text(account.name,
-                      style: const TextStyle(fontWeight: FontWeight.w800))
-                ])),
-            const Icon(Icons.keyboard_arrow_down_rounded, color: _muted),
-          ]),
-        ),
-      );
 }
 
 class AccountPickerSheet extends StatelessWidget {
@@ -4498,8 +4693,8 @@ class _EditAccountBalanceSheetState extends State<EditAccountBalanceSheet> {
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
                 inputFormatters: [_moneyInputFormatter],
-                decoration: const InputDecoration(
-                    labelText: 'Баланс', suffixText: 'BYN')),
+                decoration: InputDecoration(
+                    labelText: 'Баланс', suffixText: _displayCurrency)),
             const SizedBox(height: 22),
             SizedBox(
                 width: double.infinity,
@@ -4567,7 +4762,7 @@ class _AddAccountSheetState extends State<AddAccountSheet> {
                     hintText: 'Например, карта для покупок')),
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(
-                value: type,
+                initialValue: type,
                 decoration: const InputDecoration(labelText: 'Тип счёта'),
                 items: const [
                   'Карта',
@@ -4585,8 +4780,8 @@ class _AddAccountSheetState extends State<AddAccountSheet> {
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
                 inputFormatters: [_moneyInputFormatter],
-                decoration: const InputDecoration(
-                    labelText: 'Текущий баланс', suffixText: 'BYN')),
+                decoration: InputDecoration(
+                    labelText: 'Текущий баланс', suffixText: _displayCurrency)),
             const SizedBox(height: 22),
             SizedBox(
                 width: double.infinity,
@@ -4740,9 +4935,9 @@ class _SavingsGoalSheetState extends State<SavingsGoalSheet> {
                       const TextInputType.numberWithOptions(decimal: true),
                   textInputAction: TextInputAction.next,
                   inputFormatters: [_moneyInputFormatter],
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: 'Сумма цели',
-                    suffixText: 'BYN',
+                    suffixText: _displayCurrency,
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -4753,10 +4948,10 @@ class _SavingsGoalSheetState extends State<SavingsGoalSheet> {
                   textInputAction: TextInputAction.done,
                   inputFormatters: [_moneyInputFormatter],
                   onSubmitted: (_) => _save(),
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: 'Уже накоплено',
                     hintText: '0',
-                    suffixText: 'BYN',
+                    suffixText: _displayCurrency,
                   ),
                 ),
                 const SizedBox(height: 22),
@@ -4776,44 +4971,6 @@ class _SavingsGoalSheetState extends State<SavingsGoalSheet> {
               ]),
             ),
           ),
-        ),
-      );
-}
-
-class _Picker extends StatelessWidget {
-  const _Picker({required this.label, required this.value, required this.icon});
-  final String label, value;
-  final IconData icon;
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: _surface,
-          borderRadius: BorderRadius.circular(14),
-        ),
-        child: Row(
-          children: [
-            Icon(icon, size: 18, color: _amber),
-            const SizedBox(width: 7),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(label,
-                      style: const TextStyle(fontSize: 10, color: _muted)),
-                  const SizedBox(height: 2),
-                  Text(
-                    value,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ],
-              ),
-            ),
-          ],
         ),
       );
 }
@@ -4947,6 +5104,33 @@ class _NavBar extends StatelessWidget {
   }
 }
 
+const _storedMaterialIcons = <IconData>[
+  Icons.payments_rounded,
+  Icons.shopping_basket_rounded,
+  Icons.work_rounded,
+  Icons.local_taxi_rounded,
+  Icons.local_cafe_rounded,
+  Icons.music_note_rounded,
+  Icons.credit_card_rounded,
+  Icons.account_balance_wallet_rounded,
+  Icons.savings_rounded,
+  Icons.account_balance_rounded,
+  Icons.sell_rounded,
+  Icons.directions_car_rounded,
+  Icons.home_rounded,
+  Icons.favorite_rounded,
+  Icons.shopping_bag_rounded,
+];
+
+IconData _storedMaterialIcon(int? codePoint, IconData fallback) {
+  for (final icon in _storedMaterialIcons) {
+    if (icon.codePoint == codePoint) {
+      return icon;
+    }
+  }
+  return fallback;
+}
+
 class MoneyTransaction {
   const MoneyTransaction(
       this.title, this.subtitle, this.amount, this.icon, this.color,
@@ -4985,9 +5169,8 @@ class MoneyTransaction {
       json['title'] as String? ?? 'Операция',
       json['subtitle'] as String? ?? '',
       (json['amount'] as num?)?.toDouble() ?? 0,
-      IconData(
-          (json['icon'] as num?)?.toInt() ?? Icons.payments_rounded.codePoint,
-          fontFamily: 'MaterialIcons'),
+      _storedMaterialIcon(
+          (json['icon'] as num?)?.toInt(), Icons.payments_rounded),
       Color((json['color'] as num?)?.toInt() ?? _amber.toARGB32()),
       kind: kind,
       account: json['account'] as String?,
@@ -5019,11 +5202,8 @@ class BudgetAccount {
         json['name'] as String? ?? 'Счёт',
         json['type'] as String? ?? 'Счёт',
         (json['balance'] as num?)?.toDouble() ?? 0,
-        IconData(
-          (json['icon'] as num?)?.toInt() ??
-              Icons.account_balance_rounded.codePoint,
-          fontFamily: 'MaterialIcons',
-        ),
+        _storedMaterialIcon(
+            (json['icon'] as num?)?.toInt(), Icons.account_balance_rounded),
         Color((json['color'] as num?)?.toInt() ?? _amber.toARGB32()),
       );
 }
@@ -5043,10 +5223,8 @@ class FinanceCategory {
   factory FinanceCategory.fromJson(Map<String, dynamic> json) =>
       FinanceCategory(
         json['name'] as String? ?? 'Категория',
-        IconData(
-          (json['icon'] as num?)?.toInt() ?? Icons.sell_rounded.codePoint,
-          fontFamily: 'MaterialIcons',
-        ),
+        _storedMaterialIcon(
+            (json['icon'] as num?)?.toInt(), Icons.sell_rounded),
         Color((json['color'] as num?)?.toInt() ?? _amber.toARGB32()),
       );
 }
@@ -5114,6 +5292,7 @@ class AppStorage {
   static const _cardsKey = 'coinly_card_details_v3';
   static const _previousCardsKey = 'coinly_card_details_v2';
   static const _legacyCardsKey = 'coinly_card_details_v1';
+  static const _financialClearMarkerKey = 'coinly_financial_clear_pending_v1';
   static const _pinHashKey = 'coinly_pin_hash_v1';
   static const _pinSaltKey = 'coinly_pin_salt_v1';
   static const _biometricsKey = 'coinly_biometrics_enabled_v1';
@@ -5187,6 +5366,35 @@ class AppStorage {
     );
     await _secure.delete(key: _previousCardsKey);
     await _secure.delete(key: _legacyCardsKey);
+  }
+
+  Future<void> clearFinancialData(AppData emptyData) async {
+    final marker =
+        jsonEncode({'data': emptyData.toJson(), 'cards': <Object>[]});
+    await _secure.write(key: _financialClearMarkerKey, value: marker);
+    await _finishFinancialClear(marker);
+  }
+
+  Future<void> recoverPendingFinancialClear() async {
+    try {
+      final marker = await _secure.read(key: _financialClearMarkerKey);
+      if (marker != null) await _finishFinancialClear(marker);
+    } catch (_) {
+      // The next app start will retry while the recovery marker remains.
+    }
+  }
+
+  Future<void> _finishFinancialClear(String marker) async {
+    final payload = Map<String, dynamic>.from(jsonDecode(marker) as Map);
+    final data = Map<String, dynamic>.from(payload['data'] as Map);
+    final cards = payload['cards'] as List? ?? const <Object>[];
+    await _secure.write(key: _dataKey, value: jsonEncode(data));
+    await _secure.write(key: _cardsKey, value: jsonEncode(cards));
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.remove(_legacyDataKey);
+    await _secure.delete(key: _previousCardsKey);
+    await _secure.delete(key: _legacyCardsKey);
+    await _secure.delete(key: _financialClearMarkerKey);
   }
 
   Future<bool> hasPin() async {
@@ -5292,7 +5500,7 @@ class AppStorage {
   }
 
   Future<String> _derivePinHash(String salt, String pin) =>
-      Isolate.run(() => _pbkdf2HmacSha256(salt, pin, _pinIterations));
+      Isolate.run(() => _derivePinKey(salt, pin, _pinIterations));
 
   Future<void> _recordFailedPinAttempt() async {
     final failures =
@@ -5322,14 +5530,15 @@ class AppStorage {
       sha256.convert(utf8.encode('$salt:$pin')).toString();
 }
 
-String _pbkdf2HmacSha256(String encodedSalt, String pin, int iterations) {
-  final hmac = Hmac(sha256, utf8.encode(pin));
+//noinspection SpellCheckingInspection
+String _derivePinKey(String encodedSalt, String pin, int iterations) {
+  final mac = Hmac(sha256, utf8.encode(pin));
   final salt = base64Url.decode(base64Url.normalize(encodedSalt));
   final firstBlock = <int>[...salt, 0, 0, 0, 1];
-  var u = hmac.convert(firstBlock).bytes;
+  var u = mac.convert(firstBlock).bytes;
   final result = List<int>.from(u);
   for (var iteration = 1; iteration < iterations; iteration++) {
-    u = hmac.convert(u).bytes;
+    u = mac.convert(u).bytes;
     for (var index = 0; index < result.length; index++) {
       result[index] ^= u[index];
     }
@@ -5357,6 +5566,7 @@ class AppData {
     required this.accounts,
     required this.categories,
     required this.goals,
+    required this.currency,
   });
 
   final List<MoneyTransaction> transactions;
@@ -5364,6 +5574,7 @@ class AppData {
   final List<BudgetAccount> accounts;
   final List<FinanceCategory> categories;
   final List<SavingsGoal> goals;
+  final String currency;
 
   factory AppData.defaults() => AppData(
         transactions: [
@@ -5438,7 +5649,29 @@ class AppData {
           SavingsGoal('Подушка безопасности', 3000, 1200, _mint),
           SavingsGoal('Поездка к морю', 2400, 760, _amber),
         ],
+        currency: 'BYN',
       );
+
+  factory AppData.empty({String currency = 'BYN'}) => AppData(
+        transactions: [],
+        balance: 0,
+        accounts: [],
+        categories: _defaultCategories(),
+        goals: [],
+        currency: currency,
+      );
+
+  static List<FinanceCategory> _defaultCategories() => [
+        FinanceCategory('Продукты', Icons.shopping_basket_rounded, _mint),
+        FinanceCategory(
+            'Транспорт', Icons.directions_car_rounded, const Color(0xFF92B5FF)),
+        FinanceCategory(
+            'Кафе', Icons.local_cafe_rounded, const Color(0xFFC7A7FF)),
+        FinanceCategory('Дом', Icons.home_rounded, _amber),
+        FinanceCategory('Здоровье', Icons.favorite_rounded, _coral),
+        FinanceCategory(
+            'Покупки', Icons.shopping_bag_rounded, const Color(0xFFB9A5FF)),
+      ];
 
   static List<CardDetails> defaultCards() => [
         CardDetails('Основная карта', 'Беларусбанк', 'BYN', '4821', '08/29'),
@@ -5450,6 +5683,7 @@ class AppData {
         'accounts': accounts.map((item) => item.toJson()).toList(),
         'categories': categories.map((item) => item.toJson()).toList(),
         'goals': goals.map((item) => item.toJson()).toList(),
+        'currency': currency,
       };
 
   factory AppData.fromJson(Map<String, dynamic> json) => AppData(
@@ -5463,6 +5697,9 @@ class AppData {
             .map(FinanceCategory.fromJson)
             .toList(),
         goals: _jsonList(json['goals']).map(SavingsGoal.fromJson).toList(),
+        currency: _supportedCurrencies.contains(json['currency'])
+            ? json['currency'] as String
+            : 'BYN',
       );
 }
 
@@ -5545,9 +5782,7 @@ class _PinGateState extends State<PinGate> {
           _working = false;
           _error = lockedFor == null
               ? 'Неверный PIN'
-              : 'Слишком много попыток. Повторите через ' +
-                  (lockedFor.inSeconds + 1).toString() +
-                  ' сек.';
+              : 'Слишком много попыток. Повторите через ${lockedFor.inSeconds + 1} сек.';
           _controller.clear();
         });
       }
@@ -5661,7 +5896,9 @@ String _money(double value) {
   final chars = parts.first.split('').reversed.toList();
   final grouped = <String>[];
   for (var i = 0; i < chars.length; i++) {
-    if (i > 0 && i % 3 == 0) grouped.add(' ');
+    if (i > 0 && i % 3 == 0) {
+      grouped.add(' ');
+    }
     grouped.add(chars[i]);
   }
   return '${grouped.reversed.join()} ,${parts[1]}'.replaceAll(' ,', ',');
@@ -5673,11 +5910,16 @@ String _lastFour(String number) {
 }
 
 DateTime _dateOf(MoneyTransaction item) {
-  if (item.date != null) return item.date!;
+  if (item.date != null) {
+    return item.date!;
+  }
   final today = DateTime.now();
-  if (item.subtitle.contains('Вчера'))
+  if (item.subtitle.contains('Вчера')) {
     return today.subtract(const Duration(days: 1));
-  if (item.subtitle.contains('18 августа')) return DateTime(today.year, 8, 18);
+  }
+  if (item.subtitle.contains('18 августа')) {
+    return DateTime(today.year, 8, 18);
+  }
   return today;
 }
 
@@ -5706,11 +5948,15 @@ String _operationDateLabel(DateTime date) {
   final today = DateTime.now();
   if (date.year == today.year &&
       date.month == today.month &&
-      date.day == today.day) return 'Сегодня';
+      date.day == today.day) {
+    return 'Сегодня';
+  }
   final yesterday = today.subtract(const Duration(days: 1));
   if (date.year == yesterday.year &&
       date.month == yesterday.month &&
-      date.day == yesterday.day) return 'Вчера';
+      date.day == yesterday.day) {
+    return 'Вчера';
+  }
   const names = [
     'янв.',
     'фев.',
