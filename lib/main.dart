@@ -1300,6 +1300,10 @@ class _CoinlyHomeState extends State<CoinlyHome> {
       ),
     );
     if (updated == null) return;
+    if (updated.deleteRequested) {
+      await _deleteAccount(account);
+      return;
+    }
     setState(() {
       final previousName = account.name;
       account.name = updated.name;
@@ -1308,6 +1312,43 @@ class _CoinlyHomeState extends State<CoinlyHome> {
       _syncBalance();
     });
     await _persist();
+  }
+
+  Future<void> _deleteAccount(BudgetAccount account) async {
+    final linkedTransactions = _transactions
+        .where((item) =>
+            item.account == account.name || item.fromAccount == account.name)
+        .toList();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Удалить счёт?'),
+        content: Text(
+          linkedTransactions.isEmpty
+              ? 'Счёт «${account.name}» будет удалён.'
+              : 'Вместе со счётом «${account.name}» будут удалены связанные операции: ${linkedTransactions.length}. Это действие нельзя отменить.',
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Отмена')),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: FilledButton.styleFrom(backgroundColor: _coral),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() {
+      _accounts.remove(account);
+      _transactions.removeWhere((item) =>
+          item.account == account.name || item.fromAccount == account.name);
+      _syncBalance();
+    });
+    await _persist();
+    if (mounted) _showNotice(context, 'Счёт удалён');
   }
 
   void _renameAccountReferences(String previousName, String updatedName) {
@@ -4014,14 +4055,20 @@ class AccountsPage extends StatelessWidget {
                 const SizedBox(height: 10)
               ]),
           const SizedBox(height: 8),
-          OutlinedButton.icon(
-            onPressed: onAdd,
-            icon: const Icon(Icons.add_rounded),
-            label: const Text('Добавить счёт'),
-            style: OutlinedButton.styleFrom(
-                foregroundColor: _amber,
-                minimumSize: const Size.fromHeight(48),
-                side: const BorderSide(color: _amber)),
+          Padding(
+            padding: const EdgeInsets.all(1),
+            child: SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: onAdd,
+                icon: const Icon(Icons.add_rounded),
+                label: const Text('Добавить счёт'),
+                style: OutlinedButton.styleFrom(
+                    foregroundColor: _amber,
+                    minimumSize: const Size.fromHeight(46),
+                    side: const BorderSide(color: _amber, width: 1.25)),
+              ),
+            ),
           ),
           const SizedBox(height: 30),
           const Text('Реквизиты карт',
@@ -4035,12 +4082,20 @@ class AccountsPage extends StatelessWidget {
                     onCopyNumber: () => onCopyCardNumber(card)),
                 const SizedBox(height: 10)
               ]),
-          OutlinedButton.icon(
-              onPressed: onAddCard,
-              icon: const Icon(Icons.add_rounded),
-              label: const Text('Добавить реквизиты карты'),
-              style: OutlinedButton.styleFrom(
-                  minimumSize: const Size.fromHeight(48))),
+          Padding(
+            padding: const EdgeInsets.all(1),
+            child: SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                  onPressed: onAddCard,
+                  icon: const Icon(Icons.add_rounded),
+                  label: const Text('Добавить реквизиты карты'),
+                  style: OutlinedButton.styleFrom(
+                      minimumSize: const Size.fromHeight(46),
+                      side: BorderSide(
+                          color: _amber.withValues(alpha: .75), width: 1.25))),
+            ),
+          ),
         ]),
       );
 }
@@ -4122,13 +4177,65 @@ class CardDetailsTile extends StatelessWidget {
             icon: const Icon(Icons.copy_outlined, size: 20),
           ),
           PopupMenuButton<String>(
+            icon: const Icon(Icons.more_horiz_rounded, size: 22),
+            tooltip: 'Действия с картой',
+            offset: const Offset(-10, 38),
+            color: _surfaceHigh,
+            surfaceTintColor: Colors.transparent,
+            shadowColor: Colors.black.withValues(alpha: .32),
+            elevation: 9,
+            constraints: const BoxConstraints(minWidth: 194, maxWidth: 194),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+              side: BorderSide(color: Colors.white.withValues(alpha: .09)),
+            ),
+            menuPadding: const EdgeInsets.symmetric(vertical: 6),
             onSelected: (value) {
               if (value == 'edit') onEdit();
               if (value == 'delete') onDelete();
             },
-            itemBuilder: (context) => const [
-              PopupMenuItem(value: 'edit', child: Text('Редактировать')),
-              PopupMenuItem(value: 'delete', child: Text('Удалить'))
+            itemBuilder: (context) => [
+              PopupMenuItem(
+                value: 'edit',
+                height: 50,
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                child: Row(children: [
+                  Container(
+                    width: 30,
+                    height: 30,
+                    decoration: BoxDecoration(
+                      color: _amber.withValues(alpha: .15),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.edit_outlined,
+                        color: _amber, size: 17),
+                  ),
+                  const SizedBox(width: 10),
+                  const Text('Редактировать',
+                      style: TextStyle(fontWeight: FontWeight.w700)),
+                ]),
+              ),
+              PopupMenuItem(
+                value: 'delete',
+                height: 50,
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                child: Row(children: [
+                  Container(
+                    width: 30,
+                    height: 30,
+                    decoration: BoxDecoration(
+                      color: _coral.withValues(alpha: .15),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.delete_outline_rounded,
+                        color: _coral, size: 17),
+                  ),
+                  const SizedBox(width: 10),
+                  const Text('Удалить',
+                      style: TextStyle(
+                          color: _coral, fontWeight: FontWeight.w700)),
+                ]),
+              ),
             ],
           ),
         ]),
@@ -6061,10 +6168,16 @@ class _CategoryManagerSheetState extends State<CategoryManagerSheet> {
 }
 
 class AccountEditResult {
-  const AccountEditResult(this.name, this.balance);
+  const AccountEditResult(this.name, this.balance) : deleteRequested = false;
+
+  const AccountEditResult.delete()
+      : name = '',
+        balance = 0,
+        deleteRequested = true;
 
   final String name;
   final double balance;
+  final bool deleteRequested;
 }
 
 class EditAccountSheet extends StatefulWidget {
@@ -6170,6 +6283,17 @@ class _EditAccountSheetState extends State<EditAccountSheet> {
                           context, AccountEditResult(updatedName, value));
                     },
                     child: const Text('Сохранить'))),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: TextButton.icon(
+                onPressed: () =>
+                    Navigator.pop(context, const AccountEditResult.delete()),
+                icon: const Icon(Icons.delete_outline_rounded, size: 19),
+                label: const Text('Удалить счёт'),
+                style: TextButton.styleFrom(foregroundColor: _coral),
+              ),
+            ),
           ]),
         ),
       );
