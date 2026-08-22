@@ -10,6 +10,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:share_plus/share_plus.dart';
+
+// cspell:ignore nifranchin
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -104,8 +107,8 @@ const _englishStrings = <String, String>{
   'Скопировать': 'Copy',
   'Номер карты скопирован': 'Card number copied',
   'Экспортировать данные?': 'Export data?',
-  'Резервная копия не зашифрована: не отправляйте её другим людям и не сохраняйте в публичном облаке. PIN и реквизиты карт в файл не входят.':
-      'The backup is not encrypted. Do not share it or store it in public cloud storage. PIN and card details are not included.',
+  'Резервная копия не зашифрована: не отправляйте её другим людям и не сохраняйте в публичном облаке. Реквизиты карт в файл не входят.':
+      'The backup is not encrypted. Do not share it or store it in public cloud storage. Card details are not included.',
   'Продолжить': 'Continue',
   'Куда сохранить резервную копию?': 'Where do you want to save the backup?',
   'Резервная копия сохранена': 'Backup saved',
@@ -151,16 +154,23 @@ const _englishStrings = <String, String>{
   'Использует способ, настроенный на устройстве':
       'Uses the method set up on this device',
   'Не настроена на этом устройстве': 'Not set up on this device',
-  'Биометрия работает только после установки PIN-кода. Если она недоступна, для входа используется PIN.':
-      'Biometrics work only after you set a PIN. If unavailable, your PIN is used to sign in.',
+  'Установите PIN-код, чтобы включить': 'Set a PIN to enable it',
+  'Если биометрия недоступна, для входа используется PIN.':
+      'If biometrics are unavailable, your PIN is used to sign in.',
   'Данные': 'Data',
   'Экспортировать данные': 'Export data',
   'Сохранить операции, счета, категории и цели':
       'Save transactions, accounts, categories, and goals',
   'Импортировать данные': 'Import data',
   'Выбрать резервную копию Coinly (.json)': 'Choose a Coinly backup (.json)',
-  'PIN-код и реквизиты карт не входят в резервную копию.':
-      'PIN and card details are not included in the backup.',
+  'Реквизиты карт не входят в резервную копию.':
+      'Card details are not included in the backup.',
+  'Поделиться операциями': 'Share transactions',
+  'CSV, TXT или Markdown': 'CSV, TXT, or Markdown',
+  'Не удалось поделиться операциями': 'Could not share transactions',
+  'Игры': 'Games',
+  'Развлечения': 'Entertainment',
+  'Ещё счета': 'More accounts',
   'Очистить данные приложения': 'Clear app data',
   'Рекомендуем сначала экспортировать данные':
       'We recommend exporting your data first',
@@ -359,6 +369,106 @@ final _moneyInputFormatter = TextInputFormatter.withFunction(
           ? newValue
           : oldValue,
 );
+
+/// Keeps the expiry date easy to enter: `0829` becomes `08/29`.
+class _ExpiryDateInputFormatter extends TextInputFormatter {
+  const _ExpiryDateInputFormatter();
+
+  @override
+  TextEditingValue formatEditUpdate(
+      TextEditingValue oldValue, TextEditingValue newValue) {
+    final digits = newValue.text.replaceAll(RegExp(r'\D'), '');
+    final limited = digits.substring(0, math.min(digits.length, 4));
+    final formatted = limited.length > 2
+        ? '${limited.substring(0, 2)}/${limited.substring(2)}'
+        : limited;
+    return TextEditingValue(
+      text: formatted,
+      selection: TextSelection.collapsed(offset: formatted.length),
+    );
+  }
+}
+
+/// A field that opens its options as a bottom sheet. Unlike a popup menu it
+/// remains correctly positioned when the keyboard has just been dismissed.
+class _BottomSheetSelectField extends StatelessWidget {
+  const _BottomSheetSelectField({
+    required this.label,
+    required this.value,
+    required this.options,
+    required this.onChanged,
+  });
+
+  final String label;
+  final String value;
+  final List<String> options;
+  final ValueChanged<String> onChanged;
+
+  Future<void> _select(BuildContext context) async {
+    FocusManager.instance.primaryFocus?.unfocus();
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    if (!context.mounted) return;
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => SafeArea(
+        top: false,
+        child: Container(
+          decoration: const BoxDecoration(
+            color: _surfaceHigh,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+          ),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const SizedBox(height: 12),
+            Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: _muted,
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(label,
+                    style: const TextStyle(
+                        fontSize: 20, fontWeight: FontWeight.w800)),
+              ),
+            ),
+            ...options.map((option) => ListTile(
+                  title: Text(option),
+                  trailing: option == value
+                      ? const Icon(Icons.check_rounded, color: _amber)
+                      : null,
+                  onTap: () => Navigator.pop(sheetContext, option),
+                )),
+            const SizedBox(height: 12),
+          ]),
+        ),
+      ),
+    );
+    if (selected != null) onChanged(selected);
+  }
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+        button: true,
+        label: label,
+        child: InkWell(
+          onTap: () => _select(context),
+          borderRadius: BorderRadius.circular(18),
+          child: InputDecorator(
+            decoration: InputDecoration(labelText: _tr(label)),
+            child: Row(children: [
+              Expanded(child: Text(value)),
+              const Icon(Icons.keyboard_arrow_down_rounded, color: _muted),
+            ]),
+          ),
+        ),
+      );
+}
 
 class CoinlyApp extends StatefulWidget {
   const CoinlyApp({
@@ -1008,12 +1118,31 @@ class _CoinlyHomeState extends State<CoinlyHome> {
     _accounts = data.accounts;
     _balance = 0;
     _syncBalance();
-    _categories = data.categories;
+    _categories = List.of(data.categories);
+    final addedBaseCategories = _addMissingBaseCategories(_categories);
     _goals = data.goals;
     _currency = data.currency;
     _displayCurrency = _currency;
     _cards = widget.initialCards ?? [];
-    if (widget.initialData == null || widget.initialCards == null) _persist();
+    if (widget.initialData == null ||
+        widget.initialCards == null ||
+        addedBaseCategories) {
+      _persist();
+    }
+  }
+
+  bool _addMissingBaseCategories(List<FinanceCategory> categories) {
+    final names = categories
+        .map((category) => category.name.trim().toLowerCase())
+        .toSet();
+    var added = false;
+    for (final category in AppData._additionalBaseCategories()) {
+      if (names.add(category.name.toLowerCase())) {
+        categories.add(category);
+        added = true;
+      }
+    }
+    return added;
   }
 
   Future<void> _persist() async {
@@ -1385,6 +1514,7 @@ class _CoinlyHomeState extends State<CoinlyHome> {
         onEnableBiometrics: widget.onEnableBiometrics,
         onSetBiometricsEnabled: widget.onSetBiometricsEnabled,
         onExportData: _exportData,
+        onShareTransactions: _shareTransactions,
         onImportData: _importData,
         currency: _currency,
         onCurrencyChanged: _changeCurrency,
@@ -1412,7 +1542,7 @@ class _CoinlyHomeState extends State<CoinlyHome> {
         builder: (context) => AlertDialog(
           title: const Text('Экспортировать данные?'),
           content: const Text(
-            'Резервная копия не зашифрована: не отправляйте её другим людям и не сохраняйте в публичном облаке. PIN и реквизиты карт в файл не входят.',
+            'Резервная копия не зашифрована: не отправляйте её другим людям и не сохраняйте в публичном облаке. Реквизиты карт в файл не входят.',
           ),
           actions: [
             TextButton(
@@ -1449,6 +1579,107 @@ class _CoinlyHomeState extends State<CoinlyHome> {
     } catch (_) {
       if (mounted) _showNotice(context, 'Не удалось экспортировать данные');
     }
+  }
+
+  Future<void> _shareTransactions() async {
+    final format = await showDialog<_TransactionExportFormat>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('Поделиться операциями'),
+        children: _TransactionExportFormat.values
+            .map((format) => SimpleDialogOption(
+                  onPressed: () => Navigator.pop(context, format),
+                  child: Text(format.label),
+                ))
+            .toList(),
+      ),
+    );
+    if (format == null || !mounted) return;
+
+    try {
+      final now = DateTime.now();
+      final date =
+          '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+      final fileName = 'coinly-operations-$date.${format.extension}';
+      await SharePlus.instance.share(ShareParams(
+        title: 'Операции Coinly',
+        text: 'Операции Coinly в формате ${format.label}',
+        files: [
+          XFile.fromData(
+            Uint8List.fromList(utf8.encode(_transactionsExportText(format))),
+            mimeType: format.mimeType,
+          ),
+        ],
+        fileNameOverrides: [fileName],
+      ));
+    } catch (_) {
+      if (mounted) _showNotice(context, 'Не удалось поделиться операциями');
+    }
+  }
+
+  String _transactionsExportText(_TransactionExportFormat format) {
+    final transactions = List<MoneyTransaction>.of(_transactions)
+      ..sort((left, right) => _dateOf(right).compareTo(_dateOf(left)));
+    return switch (format) {
+      _TransactionExportFormat.csv => _transactionsAsCsv(transactions),
+      _TransactionExportFormat.txt => _transactionsAsText(transactions),
+      _TransactionExportFormat.md => _transactionsAsMarkdown(transactions),
+    };
+  }
+
+  String _transactionType(MoneyTransaction transaction) => switch (transaction.kind) {
+        TransactionKind.income => 'Доход',
+        TransactionKind.expense => 'Расход',
+        TransactionKind.transfer => 'Перевод',
+      };
+
+  String _transactionDate(MoneyTransaction transaction) =>
+      _dateOf(transaction).toIso8601String().split('T').first;
+
+  String _transactionsAsCsv(List<MoneyTransaction> transactions) {
+    String escape(String value) => '"${value.replaceAll('"', '""')}"';
+    final rows = <String>[
+      'Дата,Тип,Категория,Сумма,Валюта,Счёт,Счёт-источник,Комментарий',
+      ...transactions.map((transaction) => [
+            _transactionDate(transaction),
+            _transactionType(transaction),
+            transaction.title,
+            transaction.amount.toStringAsFixed(2),
+            _currency,
+            transaction.account ?? '',
+            transaction.fromAccount ?? '',
+            transaction.subtitle,
+          ].map(escape).join(',')),
+    ];
+    return '${rows.join('\n')}\n';
+  }
+
+  String _transactionsAsText(List<MoneyTransaction> transactions) => [
+        'Операции Coinly',
+        '',
+        ...transactions.map((transaction) => [
+              _transactionDate(transaction),
+              _transactionType(transaction),
+              transaction.title,
+              '${_money(transaction.amount)} $_currency',
+              if (transaction.account != null) transaction.account!,
+              if (transaction.subtitle.isNotEmpty) transaction.subtitle,
+            ].join(' · ')),
+        '',
+      ].join('\n');
+
+  String _transactionsAsMarkdown(List<MoneyTransaction> transactions) {
+    String escape(String value) => value.replaceAll('|', '\\|').replaceAll('\n', ' ');
+    final rows = transactions.map((transaction) =>
+        '| ${_transactionDate(transaction)} | ${_transactionType(transaction)} | ${escape(transaction.title)} | ${transaction.amount.toStringAsFixed(2)} $_currency | ${escape(transaction.account ?? '')} | ${escape(transaction.subtitle)} |');
+    return [
+      '# Операции Coinly',
+      '',
+      '| Дата | Тип | Категория | Сумма | Счёт | Комментарий |',
+      '| --- | --- | --- | ---: | --- | --- |',
+      ...rows,
+      '',
+    ].join('\n');
   }
 
   Future<void> _importData() async {
@@ -1647,6 +1878,7 @@ class SettingsPage extends StatefulWidget {
     required this.onEnableBiometrics,
     required this.onSetBiometricsEnabled,
     required this.onExportData,
+    required this.onShareTransactions,
     required this.onImportData,
     required this.currency,
     required this.onCurrencyChanged,
@@ -1663,6 +1895,7 @@ class SettingsPage extends StatefulWidget {
   final Future<bool> Function() onEnableBiometrics;
   final Future<void> Function(bool enabled) onSetBiometricsEnabled;
   final Future<void> Function() onExportData;
+  final Future<void> Function() onShareTransactions;
   final Future<void> Function() onImportData;
   final String currency;
   final Future<void> Function(String currency) onCurrencyChanged;
@@ -1690,7 +1923,11 @@ class _SettingsPageState extends State<SettingsPage> {
     _biometricsEnabled = widget.biometricsEnabled;
     _currency = widget.currency;
     _language = widget.language;
-    _checkBiometrics();
+    if (_hasPin) {
+      _checkBiometrics();
+    } else {
+      _checkingBiometrics = false;
+    }
   }
 
   Future<void> _checkBiometrics() async {
@@ -1719,7 +1956,10 @@ class _SettingsPageState extends State<SettingsPage> {
         ),
       ),
     );
-    if (changed == true && mounted) setState(() => _hasPin = true);
+    if (changed == true && mounted) {
+      setState(() => _hasPin = true);
+      _checkBiometrics();
+    }
   }
 
   Future<void> _removePin() async {
@@ -1870,19 +2110,24 @@ class _SettingsPageState extends State<SettingsPage> {
                         ),
                       ],
                       const SizedBox(height: 10),
-                      _Card(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 8),
-                        child: Row(children: [
+                      Opacity(
+                        opacity: _hasPin ? 1 : .42,
+                        child: AbsorbPointer(
+                          absorbing: !_hasPin,
+                          child: _Card(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 8),
+                            child: Row(children: [
                           Container(
                             width: 42,
                             height: 42,
                             decoration: BoxDecoration(
-                              color: _mint.withValues(alpha: .14),
+                              color: (_hasPin ? _mint : _muted)
+                                  .withValues(alpha: .14),
                               borderRadius: BorderRadius.circular(14),
                             ),
-                            child: const Icon(Icons.fingerprint_rounded,
-                                color: _mint),
+                            child: Icon(Icons.fingerprint_rounded,
+                                color: _hasPin ? _mint : _muted),
                           ),
                           const SizedBox(width: 12),
                           Expanded(
@@ -1894,7 +2139,9 @@ class _SettingsPageState extends State<SettingsPage> {
                                         TextStyle(fontWeight: FontWeight.w800)),
                                 const SizedBox(height: 3),
                                 Text(
-                                  _checkingBiometrics
+                                  !_hasPin
+                                      ? 'Установите PIN-код, чтобы включить'
+                                      : _checkingBiometrics
                                       ? 'Проверяем доступность…'
                                       : _biometricsAvailable
                                           ? 'Использует способ, настроенный на устройстве'
@@ -1906,19 +2153,24 @@ class _SettingsPageState extends State<SettingsPage> {
                             ),
                           ),
                           Switch.adaptive(
-                            value: _biometricsEnabled,
+                            value: _hasPin && _biometricsEnabled,
                             activeThumbColor: _mint,
-                            onChanged:
-                                _checkingBiometrics ? null : _toggleBiometrics,
+                            onChanged: _hasPin && !_checkingBiometrics
+                                ? _toggleBiometrics
+                                : null,
                           ),
                         ]),
+                          ),
+                        ),
                       ),
-                      const SizedBox(height: 14),
-                      const Text(
-                        'Биометрия работает только после установки PIN-кода. Если она недоступна, для входа используется PIN.',
-                        style: TextStyle(
-                            color: _muted, fontSize: 12, height: 1.45),
-                      ),
+                      if (_hasPin) ...[
+                        const SizedBox(height: 14),
+                        const Text(
+                          'Если биометрия недоступна, для входа используется PIN.',
+                          style: TextStyle(
+                              color: _muted, fontSize: 12, height: 1.45),
+                        ),
+                      ],
                       const SizedBox(height: 28),
                       const Text('Данные',
                           style: TextStyle(
@@ -1953,6 +2205,16 @@ class _SettingsPageState extends State<SettingsPage> {
                       ),
                       const SizedBox(height: 10),
                       _SettingsRow(
+                        icon: Icons.share_rounded,
+                        color: const Color(0xFFC7A7FF),
+                        title: 'Поделиться операциями',
+                        subtitle: 'CSV, TXT или Markdown',
+                        onTap: _handlingBackup
+                            ? () {}
+                            : () => _handleBackup(widget.onShareTransactions),
+                      ),
+                      const SizedBox(height: 10),
+                      _SettingsRow(
                         icon: Icons.file_download_outlined,
                         color: _amber,
                         title: 'Импортировать данные',
@@ -1960,12 +2222,6 @@ class _SettingsPageState extends State<SettingsPage> {
                         onTap: _handlingBackup
                             ? () {}
                             : () => _handleBackup(widget.onImportData),
-                      ),
-                      const SizedBox(height: 12),
-                      const Text(
-                        'PIN-код и реквизиты карт не входят в резервную копию.',
-                        style: TextStyle(
-                            color: _muted, fontSize: 12, height: 1.45),
                       ),
                       const SizedBox(height: 22),
                       _SettingsRow(
@@ -2766,19 +3022,22 @@ class _BalanceCardState extends State<BalanceCard> {
             ],
           ),
           const SizedBox(height: 9),
-          AnimatedSwitcher(
+          SizedBox(
+            width: double.infinity,
+            child: AnimatedSwitcher(
             duration: _quickMotion,
             switchInCurve: _motionCurve,
-            transitionBuilder: (child, animation) => FadeTransition(
-              opacity: animation,
-              child: SlideTransition(
-                position: Tween<Offset>(
-                  begin: const Offset(0, .08),
-                  end: Offset.zero,
-                ).animate(animation),
-                child: child,
-              ),
+            // The stage stays full-width and left-aligned for both values, so
+            // the narrower dots do not move while the balance fades out.
+            layoutBuilder: (currentChild, previousChildren) => Stack(
+              alignment: Alignment.centerLeft,
+              children: [
+                ...previousChildren,
+                if (currentChild != null) currentChild,
+              ],
             ),
+            transitionBuilder: (child, animation) =>
+                FadeTransition(opacity: animation, child: child),
             child: Text(
               visible
                   ? '${_money(widget.balance)} $_displayCurrency'
@@ -2790,6 +3049,7 @@ class _BalanceCardState extends State<BalanceCard> {
                 fontWeight: FontWeight.w600,
                 letterSpacing: -1.35,
               ),
+            ),
             ),
           ),
           const SizedBox(height: 22),
@@ -3094,49 +3354,124 @@ class _Pill extends StatelessWidget {
       );
 }
 
-class AccountsOverview extends StatelessWidget {
+class AccountsOverview extends StatefulWidget {
   const AccountsOverview({super.key, required this.accounts});
   final List<BudgetAccount> accounts;
 
   @override
-  Widget build(BuildContext context) => SizedBox(
-        height: 116,
-        child: ListView.separated(
-          scrollDirection: Axis.horizontal,
-          itemCount: accounts.length,
-          separatorBuilder: (context, index) => const SizedBox(width: 10),
-          itemBuilder: (context, index) {
-            final account = accounts[index];
-            return SizedBox(
-              width: 166,
-              child: GlassPanel(
-                radius: 18,
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Icon(account.icon, color: account.color, size: 20),
-                      const SizedBox(height: 6),
-                      SizedBox(
-                        height: 31,
-                        child: Text(
-                          account.name,
-                          maxLines: 2,
-                          style: const TextStyle(
-                              fontSize: 12,
-                              height: 1.25,
-                              fontWeight: FontWeight.w700),
-                        ),
-                      ),
-                      const Spacer(),
-                      Text('${_money(account.balance)} $_displayCurrency',
-                          style: const TextStyle(
-                              fontWeight: FontWeight.w800, fontSize: 14)),
-                    ]),
-              ),
-            );
-          },
+  State<AccountsOverview> createState() => _AccountsOverviewState();
+}
+
+class _AccountsOverviewState extends State<AccountsOverview> {
+  late final PageController _pageController;
+  var _pageIndex = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _pageController = PageController();
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  Widget _accountRow(double availableWidth, int start, int count) {
+    const gap = 10.0;
+    final cardWidth = (availableWidth - gap * (count - 1)) / count;
+    return Row(
+      children: List.generate(count * 2 - 1, (index) {
+        if (index.isOdd) return const SizedBox(width: gap);
+        return SizedBox(
+          width: cardWidth,
+          child: _AccountOverviewCard(account: widget.accounts[start + index ~/ 2]),
+        );
+      }),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.accounts.isEmpty) return const SizedBox.shrink();
+    final pageCount = (widget.accounts.length / 3).ceil();
+    if (pageCount == 1) {
+      return LayoutBuilder(
+        builder: (context, constraints) => SizedBox(
+          height: 116,
+          child: _accountRow(
+              constraints.maxWidth, 0, widget.accounts.length),
         ),
+      );
+    }
+
+    return LayoutBuilder(builder: (context, constraints) {
+      return SizedBox(
+        height: 136,
+        child: Column(children: [
+          SizedBox(
+            height: 116,
+            child: PageView.builder(
+              controller: _pageController,
+              itemCount: pageCount,
+              onPageChanged: (index) => setState(() => _pageIndex = index),
+              itemBuilder: (context, page) {
+                final start = page * 3;
+                final count = math.min(3, widget.accounts.length - start);
+                return _accountRow(constraints.maxWidth, start, count);
+              },
+            ),
+          ),
+          const SizedBox(height: 10),
+          Semantics(
+            label: 'Страница счетов ${_pageIndex + 1} из $pageCount',
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: List.generate(pageCount, (index) => AnimatedContainer(
+                    duration: _quickMotion,
+                    curve: _motionCurve,
+                    width: index == _pageIndex ? 16 : 5,
+                    height: 5,
+                    margin: const EdgeInsets.symmetric(horizontal: 3),
+                    decoration: BoxDecoration(
+                      color: index == _pageIndex ? _amber : _muted,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  )),
+            ),
+          ),
+        ]),
+      );
+    });
+  }
+}
+
+class _AccountOverviewCard extends StatelessWidget {
+  const _AccountOverviewCard({required this.account});
+  final BudgetAccount account;
+
+  @override
+  Widget build(BuildContext context) => GlassPanel(
+        radius: 18,
+        padding: const EdgeInsets.all(12),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Icon(account.icon, color: account.color, size: 20),
+          const SizedBox(height: 6),
+          SizedBox(
+            height: 31,
+            child: Text(
+              account.name,
+              maxLines: 2,
+              style: const TextStyle(
+                  fontSize: 12, height: 1.25, fontWeight: FontWeight.w700),
+            ),
+          ),
+          const Spacer(),
+          Text('${_money(account.balance)} $_displayCurrency',
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+        ]),
       );
 }
 
@@ -3272,37 +3607,44 @@ class SoftChoiceChip extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(17),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 190),
-          curve: _motionCurve,
-          height: 66,
-          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 8),
-          decoration: BoxDecoration(
-            color: selected
-                ? color.withValues(alpha: .14)
-                : _surfaceHigh.withValues(alpha: .58),
-            borderRadius: BorderRadius.circular(17),
-            border: Border.all(
+  Widget build(BuildContext context) => Padding(
+        // Prevent a selected outline from being clipped on the grid edge.
+        padding: const EdgeInsets.all(1),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(17),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 190),
+            curve: _motionCurve,
+            height: 64,
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 8),
+            decoration: BoxDecoration(
+              color: selected
+                  ? color.withValues(alpha: .14)
+                  : _surfaceHigh.withValues(alpha: .58),
+              borderRadius: BorderRadius.circular(17),
+              border: Border.all(
                 color: selected
-                    ? color.withValues(alpha: .72)
-                    : Colors.white.withValues(alpha: .11)),
+                    ? color.withValues(alpha: .85)
+                    : Colors.white.withValues(alpha: .11),
+                width: selected ? 1.25 : 1,
+              ),
+            ),
+            child:
+                Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+              Icon(icon, size: 18, color: color),
+              const SizedBox(height: 5),
+              Text(label,
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 10.5,
+                      height: 1.05,
+                      fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+                      color: selected ? _ink : const Color(0xFFC4CBD7))),
+            ]),
           ),
-          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-            Icon(icon, size: 18, color: color),
-            const SizedBox(height: 5),
-            Text(label,
-                textAlign: TextAlign.center,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    fontSize: 10.5,
-                    height: 1.05,
-                    fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
-                    color: selected ? _ink : const Color(0xFFC4CBD7))),
-          ]),
         ),
       );
 }
@@ -3806,6 +4148,7 @@ class _CardDetailsFormSheetState extends State<CardDetailsFormSheet> {
   late final TextEditingController number;
   late final TextEditingController expiry;
   late String currency;
+  String? _validationError;
   @override
   void initState() {
     super.initState();
@@ -3824,6 +4167,34 @@ class _CardDetailsFormSheetState extends State<CardDetailsFormSheet> {
     number.dispose();
     expiry.dispose();
     super.dispose();
+  }
+
+  void _clearValidationError(String _) {
+    if (_validationError != null) setState(() => _validationError = null);
+  }
+
+  void _save() {
+    final error = title.text.trim().isEmpty
+        ? 'Введите название карты'
+        : bank.text.trim().isEmpty
+            ? 'Введите название банка'
+            : !RegExp(r'^\d{12,19}$').hasMatch(number.text.trim())
+                ? 'Введите полный номер карты'
+                : null;
+    if (error != null) {
+      setState(() => _validationError = error);
+      return;
+    }
+    Navigator.pop(
+      context,
+      CardDetails(
+        title.text.trim(),
+        bank.text.trim(),
+        currency,
+        number.text.trim(),
+        expiry.text.trim(),
+      ),
+    );
   }
 
   @override
@@ -3859,29 +4230,58 @@ class _CardDetailsFormSheetState extends State<CardDetailsFormSheet> {
                               : 'Редактировать карту',
                           style: const TextStyle(
                               fontSize: 21, fontWeight: FontWeight.w800))),
+                  AnimatedSize(
+                    duration: _quickMotion,
+                    curve: _motionCurve,
+                    child: _validationError == null
+                        ? const SizedBox.shrink()
+                        : Padding(
+                            padding: const EdgeInsets.only(top: 12),
+                            child: Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: _coral.withValues(alpha: .12),
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                              child: Row(children: [
+                                const Icon(Icons.error_outline_rounded,
+                                    color: _coral, size: 19),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(_validationError!,
+                                      style: const TextStyle(
+                                          color: _coral,
+                                          fontWeight: FontWeight.w700)),
+                                ),
+                              ]),
+                            ),
+                          ),
+                  ),
                   const SizedBox(height: 16),
                   TextField(
                       controller: title,
+                      onChanged: _clearValidationError,
                       textInputAction: TextInputAction.next,
                       decoration:
                           InputDecoration(labelText: _tr('Название карты'))),
                   const SizedBox(height: 10),
                   TextField(
                       controller: bank,
+                      onChanged: _clearValidationError,
                       textInputAction: TextInputAction.next,
                       decoration: InputDecoration(labelText: _tr('Банк'))),
                   const SizedBox(height: 10),
-                  DropdownButtonFormField<String>(
-                      initialValue: currency,
-                      decoration: InputDecoration(labelText: _tr('Валюта')),
-                      items: const ['BYN', 'RUB', 'USD', 'EUR']
-                          .map((item) =>
-                              DropdownMenuItem(value: item, child: Text(item)))
-                          .toList(),
-                      onChanged: (value) => setState(() => currency = value!)),
+                  _BottomSheetSelectField(
+                    label: 'Валюта',
+                    value: currency,
+                    options: const ['BYN', 'RUB', 'USD', 'EUR'],
+                    onChanged: (value) => setState(() => currency = value),
+                  ),
                   const SizedBox(height: 10),
                   TextField(
                       controller: number,
+                      onChanged: _clearValidationError,
                       keyboardType: TextInputType.number,
                       textInputAction: TextInputAction.next,
                       enableSuggestions: false,
@@ -3898,30 +4298,17 @@ class _CardDetailsFormSheetState extends State<CardDetailsFormSheet> {
                       controller: expiry,
                       keyboardType: TextInputType.datetime,
                       textInputAction: TextInputAction.done,
+                      maxLength: 5,
+                      inputFormatters: const [_ExpiryDateInputFormatter()],
                       decoration: InputDecoration(
-                          labelText: _tr('Срок действия'), hintText: 'MM/YY')),
+                          labelText: _tr('Срок действия'),
+                          hintText: 'MM/YY',
+                          counterText: '')),
                   const SizedBox(height: 22),
                   SizedBox(
                       width: double.infinity,
                       child: FilledButton(
-                          onPressed: () {
-                            if (title.text.trim().isEmpty ||
-                                bank.text.trim().isEmpty ||
-                                !RegExp(r'^\d{12,19}$')
-                                    .hasMatch(number.text.trim())) {
-                              _showNotice(context,
-                                  'Укажите название, банк и номер карты');
-                              return;
-                            }
-                            Navigator.pop(
-                                context,
-                                CardDetails(
-                                    title.text.trim(),
-                                    bank.text.trim(),
-                                    currency,
-                                    number.text.trim(),
-                                    expiry.text.trim()));
-                          },
+                          onPressed: _save,
                           child: const Text('Сохранить'))),
                 ])),
           ),
@@ -4216,7 +4603,7 @@ class BudgetBar extends StatelessWidget {
       );
 }
 
-class AnalyticsPage extends StatelessWidget {
+class AnalyticsPage extends StatefulWidget {
   const AnalyticsPage(
       {super.key, required this.transactions, required this.balance});
 
@@ -4224,10 +4611,24 @@ class AnalyticsPage extends StatelessWidget {
   final double balance;
 
   @override
+  State<AnalyticsPage> createState() => _AnalyticsPageState();
+}
+
+class _AnalyticsPageState extends State<AnalyticsPage> {
+  late DateTime _selectedMonth;
+
+  @override
+  void initState() {
+    super.initState();
+    final now = DateTime.now();
+    _selectedMonth = DateTime(now.year, now.month);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final today = DateTime.now();
-    final monthTransactions =
-        transactions.where((item) => _sameMonth(_dateOf(item), today)).toList();
+    final monthTransactions = widget.transactions
+        .where((item) => _sameMonth(_dateOf(item), _selectedMonth))
+        .toList();
     final income = monthTransactions
         .where((item) => item.kind == TransactionKind.income)
         .fold<double>(0, (sum, item) => sum + item.amount.abs());
@@ -4235,7 +4636,7 @@ class AnalyticsPage extends StatelessWidget {
         .where((item) => item.kind == TransactionKind.expense)
         .fold<double>(0, (sum, item) => sum + item.amount.abs());
     final categories = _expenseCategories(monthTransactions);
-    final monthlyData = _monthlyFlow(transactions, today);
+    final monthlyData = _monthlyFlow(widget.transactions, _selectedMonth);
     return PageFrame(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -4250,7 +4651,10 @@ class AnalyticsPage extends StatelessWidget {
                     ?.copyWith(fontWeight: FontWeight.w800),
               ),
               const Spacer(),
-              const _MonthSelector(),
+              _MonthSelector(
+                selectedMonth: _selectedMonth,
+                onChanged: (month) => setState(() => _selectedMonth = month),
+              ),
             ],
           ),
           const SizedBox(height: 24),
@@ -4258,12 +4662,18 @@ class AnalyticsPage extends StatelessWidget {
             children: [
               Expanded(
                 child: _Metric(
-                    label: 'Доходы', amount: _money(income), color: _mint),
+                    label: 'Доходы',
+                    amount: _money(income),
+                    color: _mint,
+                    period: _monthShort(_selectedMonth)),
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: _Metric(
-                    label: 'Расходы', amount: _money(expenses), color: _coral),
+                    label: 'Расходы',
+                    amount: _money(expenses),
+                    color: _coral,
+                    period: _monthShort(_selectedMonth)),
               ),
             ],
           ),
@@ -4301,15 +4711,16 @@ class AnalyticsPage extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  '${_monthTitle(today)} · $_displayCurrency',
+                  '${_monthTitle(_selectedMonth)} · $_displayCurrency',
                   style: TextStyle(color: _muted, fontSize: 12),
                 ),
                 const SizedBox(height: 18),
                 SizedBox(
                   height: 145,
                   child: BalanceChart(
-                    transactions: transactions,
-                    balance: balance,
+                    transactions: widget.transactions,
+                    balance: widget.balance,
+                    endMonth: _selectedMonth,
                   ),
                 ),
               ],
@@ -4374,19 +4785,27 @@ List<MonthlyFlowData> _monthlyFlow(
   });
 }
 
-class MonthlyFlowChart extends StatelessWidget {
+class MonthlyFlowChart extends StatefulWidget {
   const MonthlyFlowChart({super.key, required this.data});
 
   final List<MonthlyFlowData> data;
 
   @override
+  State<MonthlyFlowChart> createState() => _MonthlyFlowChartState();
+}
+
+class _MonthlyFlowChartState extends State<MonthlyFlowChart> {
+  int? _selectedIndex;
+
+  @override
   Widget build(BuildContext context) {
-    final highest = data.fold<double>(1,
+    final highest = widget.data.fold<double>(1,
         (value, item) => math.max(value, math.max(item.income, item.expense)));
+    final selected = _selectedIndex == null ? null : widget.data[_selectedIndex!];
     return Semantics(
       label: _tr('Доходы и расходы за последние шесть месяцев'),
       child: SizedBox(
-        height: 158,
+        height: 198,
         child: Column(
           children: [
             Row(
@@ -4398,49 +4817,108 @@ class MonthlyFlowChart extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 7),
+            AnimatedSize(
+              duration: _quickMotion,
+              curve: _motionCurve,
+              child: selected == null
+                  ? const Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text('Нажмите на месяц, чтобы увидеть суммы',
+                          style: TextStyle(color: _muted, fontSize: 11)),
+                    )
+                  : Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 7),
+                      decoration: BoxDecoration(
+                        color: _surfaceHigh,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Row(children: [
+                        Text(_monthTitle(selected.month),
+                            style: const TextStyle(
+                                fontSize: 11, fontWeight: FontWeight.w800)),
+                        const Spacer(),
+                        Text('+${_money(selected.income)} $_displayCurrency',
+                            style: const TextStyle(
+                                color: _mint,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w800)),
+                        const SizedBox(width: 9),
+                        Text('−${_money(selected.expense)} $_displayCurrency',
+                            style: const TextStyle(
+                                color: _coral,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w800)),
+                      ]),
+                    ),
+            ),
+            const SizedBox(height: 8),
             Expanded(
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.end,
-                children: data.map((item) {
+                children: widget.data.asMap().entries.map((entry) {
+                  final index = entry.key;
+                  final item = entry.value;
+                  final isSelected = index == _selectedIndex;
                   return Expanded(
                     child: Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 3),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.end,
-                        children: [
-                          Expanded(
-                            child: Align(
-                              alignment: Alignment.bottomCenter,
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.end,
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  _FlowBar(
-                                    height: item.income / highest,
-                                    color: _mint,
-                                    label: _appLanguage == AppLanguage.english
-                                        ? '${_monthShort(item.month)}: income ${_money(item.income)} $_displayCurrency'
-                                        : '${_monthShort(item.month)}: доходы ${_money(item.income)} $_displayCurrency',
+                      child: Semantics(
+                        button: true,
+                        selected: isSelected,
+                        label:
+                            '${_monthTitle(item.month)}. Доходы ${_money(item.income)} $_displayCurrency, расходы ${_money(item.expense)} $_displayCurrency',
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: () => setState(() => _selectedIndex =
+                              isSelected ? null : index),
+                          child: AnimatedContainer(
+                            duration: _quickMotion,
+                            decoration: BoxDecoration(
+                              color: isSelected
+                                  ? _amber.withValues(alpha: .10)
+                                  : Colors.transparent,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.end,
+                              children: [
+                                Expanded(
+                                  child: Align(
+                                    alignment: Alignment.bottomCenter,
+                                    child: Row(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.end,
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        _FlowBar(
+                                          height: item.income / highest,
+                                          color: _mint,
+                                          label: '',
+                                        ),
+                                        const SizedBox(width: 3),
+                                        _FlowBar(
+                                          height: item.expense / highest,
+                                          color: _coral,
+                                          label: '',
+                                        ),
+                                      ],
+                                    ),
                                   ),
-                                  const SizedBox(width: 3),
-                                  _FlowBar(
-                                    height: item.expense / highest,
-                                    color: _coral,
-                                    label: _appLanguage == AppLanguage.english
-                                        ? '${_monthShort(item.month)}: expenses ${_money(item.expense)} $_displayCurrency'
-                                        : '${_monthShort(item.month)}: расходы ${_money(item.expense)} $_displayCurrency',
-                                  ),
-                                ],
-                              ),
+                                ),
+                                const SizedBox(height: 7),
+                                Text(_monthShort(item.month),
+                                    style: TextStyle(
+                                        color:
+                                            isSelected ? _amber : _muted,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w700)),
+                              ],
                             ),
                           ),
-                          const SizedBox(height: 7),
-                          Text(_monthShort(item.month),
-                              style: const TextStyle(
-                                  color: _muted,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w700)),
-                        ],
+                        ),
                       ),
                     ),
                   );
@@ -4538,8 +5016,9 @@ class _Metric extends StatelessWidget {
     required this.label,
     required this.amount,
     required this.color,
+    required this.period,
   });
-  final String label, amount;
+  final String label, amount, period;
   final Color color;
   @override
   Widget build(BuildContext context) => _Card(
@@ -4558,7 +5037,7 @@ class _Metric extends StatelessWidget {
             ),
             const SizedBox(height: 5),
             Text(
-              'за текущий месяц',
+              'за $period',
               style:
                   TextStyle(color: color.withValues(alpha: .8), fontSize: 11),
             ),
@@ -4568,9 +5047,119 @@ class _Metric extends StatelessWidget {
 }
 
 class _MonthSelector extends StatelessWidget {
-  const _MonthSelector();
+  const _MonthSelector({
+    required this.selectedMonth,
+    required this.onChanged,
+  });
+
+  final DateTime selectedMonth;
+  final ValueChanged<DateTime> onChanged;
+
+  Future<void> _openMonthPicker(BuildContext context) async {
+    final now = DateTime.now();
+    final months = List.generate(
+      12,
+      (index) => DateTime(now.year, now.month - index),
+    );
+    final selected = await showModalBottomSheet<DateTime>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => SafeArea(
+        top: false,
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+          decoration: const BoxDecoration(
+            color: _surfaceHigh,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+          ),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: _muted,
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+            const SizedBox(height: 17),
+            const Align(
+              alignment: Alignment.centerLeft,
+              child: Text('Выберите месяц',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+            ),
+            const SizedBox(height: 16),
+            GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: months.length,
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 3,
+                mainAxisSpacing: 8,
+                crossAxisSpacing: 8,
+                childAspectRatio: 2.25,
+              ),
+              itemBuilder: (context, index) {
+                final month = months[index];
+                final isSelected = _sameMonth(month, selectedMonth);
+                return Padding(
+                  // Keeps the selected outline away from the grid bounds and
+                  // neighbouring cells on every device pixel ratio.
+                  padding: const EdgeInsets.all(1),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(14),
+                    onTap: () => Navigator.pop(sheetContext, month),
+                    child: AnimatedContainer(
+                      duration: _quickMotion,
+                      curve: _motionCurve,
+                      decoration: BoxDecoration(
+                        color: isSelected
+                            ? _amber.withValues(alpha: .18)
+                            : _surface,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: isSelected
+                              ? _amber.withValues(alpha: .85)
+                              : Colors.white.withValues(alpha: .06),
+                          width: isSelected ? 1.25 : 1,
+                        ),
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(_monthName(month),
+                              style: TextStyle(
+                                color: isSelected ? _amber : _ink,
+                                fontWeight: FontWeight.w800,
+                                fontSize: 13,
+                              )),
+                          const SizedBox(height: 1),
+                          Text('${month.year}',
+                              style: const TextStyle(
+                                  color: _muted,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w600)),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ]),
+        ),
+      ),
+    );
+    if (selected != null) onChanged(selected);
+  }
+
   @override
-  Widget build(BuildContext context) => Container(
+  Widget build(BuildContext context) => Semantics(
+        button: true,
+        label: 'Выбрать месяц',
+        child: InkWell(
+          onTap: () => _openMonthPicker(context),
+          borderRadius: BorderRadius.circular(12),
+          child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
         decoration: BoxDecoration(
           color: _surface,
@@ -4580,11 +5169,13 @@ class _MonthSelector extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              _monthShort(DateTime.now()),
+              _monthName(selectedMonth),
               style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
             ),
             const Icon(Icons.keyboard_arrow_down_rounded, size: 18),
           ],
+        ),
+      ),
         ),
       );
 }
@@ -4793,10 +5384,14 @@ class _DonutPainter extends CustomPainter {
 
 class BalanceChart extends StatefulWidget {
   const BalanceChart(
-      {super.key, required this.transactions, required this.balance});
+      {super.key,
+      required this.transactions,
+      required this.balance,
+      required this.endMonth});
 
   final List<MoneyTransaction> transactions;
   final double balance;
+  final DateTime endMonth;
 
   @override
   State<BalanceChart> createState() => _BalanceChartState();
@@ -4832,7 +5427,17 @@ class _BalanceChartState extends State<BalanceChart> {
 
   @override
   Widget build(BuildContext context) {
-    final history = _buildBalanceHistory(widget.transactions, widget.balance);
+    final afterSelectedMonth =
+        DateTime(widget.endMonth.year, widget.endMonth.month + 1);
+    final pastTransactions = widget.transactions
+        .where((item) => _dateOf(item).isBefore(afterSelectedMonth))
+        .toList();
+    final futureDelta = widget.transactions
+        .where((item) => !_dateOf(item).isBefore(afterSelectedMonth))
+        .where((item) => item.kind != TransactionKind.transfer)
+        .fold<double>(0, (sum, item) => sum + item.amount);
+    final history =
+        _buildBalanceHistory(pastTransactions, widget.balance - futureDelta);
     if (history.isEmpty) {
       return const Center(
         child: Text(
@@ -5620,19 +6225,17 @@ class _AddAccountSheetState extends State<AddAccountSheet> {
                     labelText: _tr('Название'),
                     hintText: _tr('Например, карта для покупок'))),
             const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-                initialValue: type,
-                decoration: InputDecoration(labelText: _tr('Тип счёта')),
-                items: const [
-                  'Карта',
-                  'Кошелёк',
-                  'Накопления',
-                  'Банковский счёт'
-                ]
-                    .map((item) =>
-                        DropdownMenuItem(value: item, child: Text(item)))
-                    .toList(),
-                onChanged: (value) => setState(() => type = value!)),
+            _BottomSheetSelectField(
+              label: 'Тип счёта',
+              value: type,
+              options: const [
+                'Карта',
+                'Кошелёк',
+                'Накопления',
+                'Банковский счёт'
+              ],
+              onChanged: (value) => setState(() => type = value),
+            ),
             const SizedBox(height: 12),
             TextField(
                 controller: balance,
@@ -5991,6 +6594,8 @@ const _storedMaterialIcons = <IconData>[
   Icons.home_rounded,
   Icons.favorite_rounded,
   Icons.shopping_bag_rounded,
+  Icons.sports_esports_rounded,
+  Icons.celebration_rounded,
 ];
 
 IconData _storedMaterialIcon(int? codePoint, IconData fallback) {
@@ -6052,6 +6657,17 @@ class MoneyTransaction {
 }
 
 enum TransactionKind { expense, income, transfer }
+
+enum _TransactionExportFormat {
+  csv('CSV', 'csv', 'text/csv'),
+  txt('TXT', 'txt', 'text/plain'),
+  md('Markdown', 'md', 'text/markdown');
+
+  const _TransactionExportFormat(this.label, this.extension, this.mimeType);
+  final String label;
+  final String extension;
+  final String mimeType;
+}
 
 class BudgetAccount {
   BudgetAccount(this.name, this.type, this.balance, this.icon, this.color);
@@ -6547,6 +7163,7 @@ class AppData {
           FinanceCategory('Здоровье', Icons.favorite_rounded, _coral),
           FinanceCategory(
               'Покупки', Icons.shopping_bag_rounded, const Color(0xFFB9A5FF)),
+          ..._additionalBaseCategories(),
         ],
         goals: [
           SavingsGoal('Подушка безопасности', 3000, 1200, _mint),
@@ -6691,6 +7308,14 @@ class AppData {
         FinanceCategory('Здоровье', Icons.favorite_rounded, _coral),
         FinanceCategory(
             'Покупки', Icons.shopping_bag_rounded, const Color(0xFFB9A5FF)),
+        ..._additionalBaseCategories(),
+      ];
+
+  static List<FinanceCategory> _additionalBaseCategories() => [
+        FinanceCategory(
+            'Игры', Icons.sports_esports_rounded, const Color(0xFF8AC7FF)),
+        FinanceCategory(
+            'Развлечения', Icons.celebration_rounded, const Color(0xFFFFB86B)),
       ];
 
   static List<CardDetails> defaultCards() => [
@@ -6948,7 +7573,7 @@ DateTime _dateOf(MoneyTransaction item) {
 bool _sameMonth(DateTime first, DateTime second) =>
     first.year == second.year && first.month == second.month;
 
-String _monthTitle(DateTime date) {
+String _monthName(DateTime date) {
   const russianNames = [
     'январь',
     'февраль',
@@ -6979,8 +7604,10 @@ String _monthTitle(DateTime date) {
   ];
   final names =
       _appLanguage == AppLanguage.english ? englishNames : russianNames;
-  return '${names[date.month - 1]} ${date.year}';
+  return names[date.month - 1];
 }
+
+String _monthTitle(DateTime date) => '${_monthName(date)} ${date.year}';
 
 String _operationDateLabel(DateTime date) {
   final today = DateTime.now();
@@ -7030,7 +7657,17 @@ String _operationDateLabel(DateTime date) {
       : '${date.day} ${names[date.month - 1]}';
 }
 
-void _showNotice(BuildContext context, String text) =>
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(text), behavior: SnackBarBehavior.floating),
-    );
+void _showNotice(BuildContext context, String text) {
+  final media = MediaQuery.of(context);
+  const noticeHeight = 56.0;
+  final topInset = media.padding.top + 12;
+  final bottomMargin =
+      math.max(0.0, media.size.height - topInset - noticeHeight).toDouble();
+  ScaffoldMessenger.of(context)
+    ..hideCurrentSnackBar()
+    ..showSnackBar(SnackBar(
+      content: Text(text),
+      behavior: SnackBarBehavior.floating,
+      margin: EdgeInsets.fromLTRB(16, 0, 16, bottomMargin),
+    ));
+}
