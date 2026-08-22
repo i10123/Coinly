@@ -4,7 +4,8 @@ import 'dart:math' as math;
 
 import 'package:crypto/crypto.dart';
 import 'package:file_picker/file_picker.dart' hide AndroidOptions;
-import 'package:flutter/material.dart';
+import 'package:flutter/material.dart' hide Text;
+import 'package:flutter/material.dart' as material show Text;
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:local_auth/local_auth.dart';
@@ -20,17 +21,27 @@ Future<void> main() async {
     storage.loadCards(),
     storage.hasPin(),
     storage.biometricsEnabled(),
+    storage.onboardingCompleted(),
+    storage.loadLanguage(),
   ]);
   final data = startupValues[0] as AppData?;
   final cards = startupValues[1] as List<CardDetails>?;
   final hasPin = startupValues[2] as bool;
   final biometricsEnabled = startupValues[3] as bool;
+  var onboardingCompleted = startupValues[4] as bool;
+  final language = startupValues[5] as AppLanguage;
+  if (!onboardingCompleted && (data != null || cards != null)) {
+    await storage.setOnboardingCompleted();
+    onboardingCompleted = true;
+  }
   runApp(CoinlyApp(
     storage: storage,
     initialData: data,
     initialCards: cards,
     hasPin: hasPin,
     biometricsEnabled: biometricsEnabled,
+    onboardingCompleted: onboardingCompleted,
+    initialLanguage: language,
   ));
 }
 
@@ -46,6 +57,302 @@ const _motionCurve = Cubic(.22, 1, .36, 1);
 const _quickMotion = Duration(milliseconds: 180);
 const _supportedCurrencies = ['BYN', 'RUB', 'USD', 'EUR'];
 String _displayCurrency = 'BYN';
+AppLanguage _appLanguage = AppLanguage.russian;
+final _appLanguageNotifier = ValueNotifier<AppLanguage>(_appLanguage);
+
+enum AppLanguage {
+  russian('Русский', 'Русский'),
+  english('English', 'Английский');
+
+  const AppLanguage(this.label, this.russianLabel);
+  final String label;
+  final String russianLabel;
+}
+
+String _tr(String source) => _appLanguage == AppLanguage.english
+    ? _englishStrings[source] ?? source
+    : source;
+
+const _englishStrings = <String, String>{
+  'Личный бюджет': 'Personal budget',
+  'Подтвердите личность для входа в Coinly':
+      'Confirm your identity to open Coinly',
+  'Не удалось подготовить приложение': 'Could not prepare the app',
+  'Пропустить': 'Skip',
+  'Далее': 'Next',
+  'Ваши деньги — под контролем': 'Your money, under control',
+  'Добавляйте счета, фиксируйте расходы и всегда знайте свой общий баланс.':
+      'Add accounts, record expenses, and always know your total balance.',
+  'Понятная аналитика': 'Clear insights',
+  'Доходы, расходы и динамика баланса собираются автоматически из ваших операций.':
+      'Income, expenses, and balance trends are automatically calculated from your transactions.',
+  'Начнём?': 'Ready to begin?',
+  'Можно начать с чистого листа или загрузить пример с вымышленными данными, чтобы посмотреть возможности Coinly.':
+      'Start with a clean slate or load fictional sample data to explore Coinly.',
+  'Посмотреть пример': 'View sample',
+  'Начать с чистого листа': 'Start with a clean slate',
+  'Сначала добавьте счёт': 'Add an account first',
+  'Удалить операцию?': 'Delete transaction?',
+  'Это действие нельзя отменить.': 'This action cannot be undone.',
+  'Отмена': 'Cancel',
+  'Удалить': 'Delete',
+  'Добавьте полный номер карты в реквизитах':
+      'Add the full card number in card details',
+  'Скопировать номер карты?': 'Copy card number?',
+  'Номер попадёт в системный буфер обмена и будет очищен через 30 секунд.':
+      'The number will be copied to the system clipboard and cleared after 30 seconds.',
+  'Скопировать': 'Copy',
+  'Номер карты скопирован': 'Card number copied',
+  'Экспортировать данные?': 'Export data?',
+  'Резервная копия не зашифрована: не отправляйте её другим людям и не сохраняйте в публичном облаке. PIN и реквизиты карт в файл не входят.':
+      'The backup is not encrypted. Do not share it or store it in public cloud storage. PIN and card details are not included.',
+  'Продолжить': 'Continue',
+  'Куда сохранить резервную копию?': 'Where do you want to save the backup?',
+  'Резервная копия сохранена': 'Backup saved',
+  'Не удалось экспортировать данные': 'Could not export data',
+  'Выберите резервную копию Coinly': 'Select a Coinly backup',
+  'Импортировать данные?': 'Import data?',
+  'Текущие операции, счета, категории и цели будут заменены. Реквизиты карт и PIN не изменятся.':
+      'Current transactions, accounts, categories, and goals will be replaced. Card details and PIN will not change.',
+  'Импортировать': 'Import',
+  'Данные импортированы': 'Data imported',
+  'Файл слишком большой': 'File is too large',
+  'Это не резервная копия Coinly': 'This is not a Coinly backup',
+  'Не удалось прочитать файл': 'Could not read the file',
+  'Очистить данные приложения?': 'Clear app data?',
+  'Будут удалены операции, счета, цели и реквизиты карт. Рекомендуем сначала сделать экспорт данных.':
+      'Transactions, accounts, goals, and card details will be deleted. We recommend exporting your data first.',
+  'Подтвердите очищение': 'Confirm clearing',
+  'Восстановить удалённые данные будет нельзя.':
+      'Deleted data cannot be restored.',
+  'Очистить всё': 'Clear everything',
+  'Данные приложения очищены': 'App data cleared',
+  'Сначала установите PIN-код': 'Set a PIN first',
+  'На устройстве не настроена биометрия':
+      'Biometrics are not set up on this device',
+  'Не удалось подтвердить биометрию': 'Could not verify biometrics',
+  'Основная валюта': 'Main currency',
+  'Смена валюты не конвертирует уже введённые суммы.':
+      'Changing the currency does not convert amounts you have already entered.',
+  'Язык интерфейса': 'Interface language',
+  'Выберите язык': 'Choose language',
+  'Русский': 'Russian',
+  'Английский': 'English',
+  'Настройки': 'Settings',
+  'Безопасность': 'Security',
+  'Изменить PIN-код': 'Change PIN',
+  'Установить PIN-код': 'Set PIN',
+  'Код состоит из 4 цифр': 'The code has 4 digits',
+  'Защита входа не включена': 'Login protection is off',
+  'Отключить PIN-код': 'Disable PIN',
+  'Потребуется текущий PIN-код': 'Your current PIN will be required',
+  'Вход по биометрии': 'Biometric login',
+  'Проверяем доступность…': 'Checking availability…',
+  'Использует способ, настроенный на устройстве':
+      'Uses the method set up on this device',
+  'Не настроена на этом устройстве': 'Not set up on this device',
+  'Биометрия работает только после установки PIN-кода. Если она недоступна, для входа используется PIN.':
+      'Biometrics work only after you set a PIN. If unavailable, your PIN is used to sign in.',
+  'Данные': 'Data',
+  'Экспортировать данные': 'Export data',
+  'Сохранить операции, счета, категории и цели':
+      'Save transactions, accounts, categories, and goals',
+  'Импортировать данные': 'Import data',
+  'Выбрать резервную копию Coinly (.json)': 'Choose a Coinly backup (.json)',
+  'PIN-код и реквизиты карт не входят в резервную копию.':
+      'PIN and card details are not included in the backup.',
+  'Очистить данные приложения': 'Clear app data',
+  'Рекомендуем сначала экспортировать данные':
+      'We recommend exporting your data first',
+  'Создано nifranchin': 'Created by nifranchin',
+  'PIN должен содержать 4 цифры': 'PIN must contain 4 digits',
+  'Старый PIN введён неверно': 'The current PIN is incorrect',
+  'Новые PIN-коды не совпадают': 'New PIN codes do not match',
+  'Введите старый PIN': 'Enter current PIN',
+  'Введите новый PIN': 'Enter new PIN',
+  'Создайте PIN-код': 'Create a PIN',
+  'Повторите новый PIN': 'Repeat new PIN',
+  'Это подтвердит изменение кода': 'This confirms the code change',
+  'Ровно 4 цифры': 'Exactly 4 digits',
+  'Введите PIN ещё раз': 'Enter the PIN again',
+  'Сохраняем…': 'Saving…',
+  'Введите текущий PIN из 4 цифр': 'Enter your current 4-digit PIN',
+  'PIN-код введён неверно': 'Incorrect PIN',
+  'Введите текущий PIN для подтверждения': 'Enter your current PIN to confirm',
+  'Счета': 'Accounts',
+  'Доходы': 'Income',
+  'Расходы': 'Expenses',
+  'Быстрые действия': 'Quick actions',
+  'Расход': 'Expense',
+  'Доход': 'Income',
+  'Перевод': 'Transfer',
+  'Последние операции': 'Recent transactions',
+  'Все': 'All',
+  'Общий баланс': 'Total balance',
+  'Нет операций за месяц': 'No transactions this month',
+  'Первая цель накопления': 'Your first savings goal',
+  'Добавьте сумму и следите за прогрессом здесь.':
+      'Add an amount and track your progress here.',
+  'Добавить цель': 'Add goal',
+  'Цель накопления': 'Savings goal',
+  'Добавить цель накопления': 'Add savings goal',
+  'Завтра · Регулярный расход': 'Tomorrow · Recurring expense',
+  'Операции': 'Transactions',
+  'История операций': 'Transaction history',
+  'Добавить счёт': 'Add account',
+  'Реквизиты карт': 'Card details',
+  'Добавить реквизиты карты': 'Add card details',
+  'Копировать номер карты': 'Copy card number',
+  'Редактировать': 'Edit',
+  'Реквизиты карты': 'Card details',
+  'Редактировать карту': 'Edit card',
+  'Сохранить': 'Save',
+  'Новая категория': 'New category',
+  'Название категории': 'Category name',
+  'Название карты': 'Card name',
+  'Банк': 'Bank',
+  'Валюта': 'Currency',
+  'Номер карты': 'Card number',
+  '16–19 цифр': '16–19 digits',
+  'Срок действия': 'Expiry date',
+  'Например, Обучение': 'For example, Education',
+  'Комментарий (необязательно)': 'Comment (optional)',
+  'Название': 'Name',
+  'Баланс': 'Balance',
+  'Например, карта для покупок': 'For example, shopping card',
+  'Тип счёта': 'Account type',
+  'Текущий баланс': 'Current balance',
+  'Что хотите накопить?': 'What do you want to save for?',
+  'Например, новый телефон': 'For example, a new phone',
+  'Сумма цели': 'Goal amount',
+  'Уже накоплено': 'Already saved',
+  'Категории': 'Categories',
+  'Бюджеты': 'Budgets',
+  'Новый бюджет': 'New budget',
+  'Общий бюджет': 'Total budget',
+  'ПО КАТЕГОРИЯМ': 'BY CATEGORY',
+  'Продукты': 'Groceries',
+  'Кафе и рестораны': 'Cafés and restaurants',
+  'Транспорт': 'Transport',
+  'Покупки': 'Shopping',
+  'Аналитика': 'Analytics',
+  'Расходы по категориям': 'Expenses by category',
+  'Доходы и расходы по месяцам': 'Monthly income and expenses',
+  'Динамика баланса': 'Balance trend',
+  'Доходы и расходы за последние шесть месяцев':
+      'Income and expenses for the last six months',
+  'за текущий месяц': 'for the current month',
+  'За этот месяц пока нет расходов': 'There are no expenses this month yet',
+  'Добавьте операции, чтобы увидеть динамику':
+      'Add transactions to see the trend',
+  'Динамика баланса. Нажмите на точку, чтобы увидеть значение':
+      'Balance trend. Tap a point to view its value',
+  'Новая операция': 'New transaction',
+  'Редактировать операцию': 'Edit transaction',
+  'Удалить операцию': 'Delete transaction',
+  'Категория': 'Category',
+  'Выберите счёт': 'Choose an account',
+  'Категории расходов': 'Expense categories',
+  'Редактировать счёт': 'Edit account',
+  'Название и текущий остаток': 'Name and current balance',
+  'Новый счёт': 'New account',
+  'Изменить цель': 'Edit goal',
+  'Главная': 'Home',
+  'Карта': 'Card',
+  'Кошелёк': 'Wallet',
+  'Накопления': 'Savings',
+  'Банковский счёт': 'Bank account',
+  'Сбережения': 'Savings',
+  'Дом': 'Home',
+  'Здоровье': 'Health',
+  'Кафе': 'Café',
+  'Зарплата': 'Salary',
+  'Такси': 'Taxi',
+  'Кофе': 'Coffee',
+  'Подписка': 'Subscription',
+  'Подушка безопасности': 'Emergency fund',
+  'Поездка к морю': 'Trip to the sea',
+  'Отпуск': 'Vacation',
+  'В накопления': 'To savings',
+  'Снять наличные': 'Withdraw cash',
+  'Основная карта': 'Main card',
+  'Наличные': 'Cash',
+  'Сегодня': 'Today',
+  'Вчера': 'Yesterday',
+  'янв': 'Jan',
+  'фев': 'Feb',
+  'мар': 'Mar',
+  'апр': 'Apr',
+  'май': 'May',
+  'июн': 'Jun',
+  'июл': 'Jul',
+  'авг': 'Aug',
+  'сен': 'Sep',
+  'окт': 'Oct',
+  'ноя': 'Nov',
+  'дек': 'Dec',
+};
+
+/// A drop-in localized replacement for Material [Text].
+///
+/// Keeping the source language as Russian makes every existing screen use the
+/// same copy while translating it at build time when English is selected.
+class Text extends StatelessWidget {
+  const Text(
+    this.data, {
+    super.key,
+    this.style,
+    this.strutStyle,
+    this.textAlign,
+    this.textDirection,
+    this.locale,
+    this.softWrap,
+    this.overflow,
+    this.textScaler,
+    this.maxLines,
+    this.semanticsLabel,
+    this.textWidthBasis,
+    this.textHeightBehavior,
+    this.selectionColor,
+  });
+
+  final String data;
+  final TextStyle? style;
+  final StrutStyle? strutStyle;
+  final TextAlign? textAlign;
+  final TextDirection? textDirection;
+  final Locale? locale;
+  final bool? softWrap;
+  final TextOverflow? overflow;
+  final TextScaler? textScaler;
+  final int? maxLines;
+  final String? semanticsLabel;
+  final TextWidthBasis? textWidthBasis;
+  final TextHeightBehavior? textHeightBehavior;
+  final Color? selectionColor;
+
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder<AppLanguage>(
+        valueListenable: _appLanguageNotifier,
+        builder: (context, _, child) => material.Text(
+          _tr(data),
+          style: style,
+          strutStyle: strutStyle,
+          textAlign: textAlign,
+          textDirection: textDirection,
+          locale: locale,
+          softWrap: softWrap,
+          overflow: overflow,
+          textScaler: textScaler,
+          maxLines: maxLines,
+          semanticsLabel: semanticsLabel == null ? null : _tr(semanticsLabel!),
+          textWidthBasis: textWidthBasis,
+          textHeightBehavior: textHeightBehavior,
+          selectionColor: selectionColor,
+        ),
+      );
+}
+
 final _moneyInputFormatter = TextInputFormatter.withFunction(
   (oldValue, newValue) =>
       RegExp(r'^\d{0,12}([,.]\d{0,2})?$').hasMatch(newValue.text)
@@ -61,6 +368,8 @@ class CoinlyApp extends StatefulWidget {
     required this.initialCards,
     required this.hasPin,
     required this.biometricsEnabled,
+    required this.onboardingCompleted,
+    required this.initialLanguage,
   });
 
   final AppStorage storage;
@@ -68,6 +377,8 @@ class CoinlyApp extends StatefulWidget {
   final List<CardDetails>? initialCards;
   final bool hasPin;
   final bool biometricsEnabled;
+  final bool onboardingCompleted;
+  final AppLanguage initialLanguage;
 
   @override
   State<CoinlyApp> createState() => _CoinlyAppState();
@@ -79,12 +390,22 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
   late bool _hasPin;
   late bool _unlocked;
   late bool _biometricsEnabled;
+  late bool _onboardingCompleted;
+  late AppData? _initialData;
+  late List<CardDetails>? _initialCards;
+  late AppLanguage _language;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _hasPin = widget.hasPin;
+    _onboardingCompleted = widget.onboardingCompleted;
+    _initialData = widget.initialData;
+    _initialCards = widget.initialCards;
+    _language = widget.initialLanguage;
+    _appLanguage = _language;
+    _appLanguageNotifier.value = _language;
     // PIN protection is opt-in. Until it is enabled in Settings, the local
     // budget opens normally; after that every launch requires authentication.
     _unlocked = !_hasPin;
@@ -149,7 +470,7 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
       final available = await auth.getAvailableBiometrics();
       if (!supported || available.isEmpty) return false;
       final authenticated = await auth.authenticate(
-        localizedReason: 'Подтвердите личность для входа в Coinly',
+        localizedReason: _tr('Подтвердите личность для входа в Coinly'),
         biometricOnly: true,
         persistAcrossBackgrounding: true,
       );
@@ -171,6 +492,31 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
   Future<void> _setBiometricsEnabled(bool enabled) async {
     await widget.storage.setBiometricsEnabled(enabled);
     if (mounted) setState(() => _biometricsEnabled = enabled);
+  }
+
+  Future<void> _setLanguage(AppLanguage language) async {
+    if (language == _language) return;
+    _appLanguage = language;
+    _appLanguageNotifier.value = language;
+    setState(() => _language = language);
+    await widget.storage.saveLanguage(language);
+  }
+
+  Future<void> _completeOnboarding(bool loadDemo) async {
+    final data = loadDemo ? AppData.demo() : AppData.empty();
+    final cards = <CardDetails>[];
+    await Future.wait([
+      widget.storage.saveData(data),
+      widget.storage.saveCards(cards),
+      widget.storage.setOnboardingCompleted(),
+    ]);
+    if (mounted) {
+      setState(() {
+        _initialData = data;
+        _initialCards = cards;
+        _onboardingCompleted = true;
+      });
+    }
   }
 
   @override
@@ -306,29 +652,37 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
       ),
       home: _showLaunchSplash
           ? const LaunchSplashPage()
-          : _unlocked
-              ? CoinlyHome(
-                  dark: _dark,
-                  storage: widget.storage,
-                  initialData: widget.initialData,
-                  initialCards: widget.initialCards,
-                  onThemeChanged: () => setState(() => _dark = !_dark),
-                  hasPin: _hasPin,
-                  biometricsEnabled: _biometricsEnabled,
-                  onSetPin: _setPin,
-                  onVerifyPin: _verifyPin,
-                  onRemovePin: _removePin,
-                  onEnableBiometrics: _enableBiometrics,
-                  onSetBiometricsEnabled: _setBiometricsEnabled,
+          : !_onboardingCompleted
+              ? OnboardingPage(
+                  language: _language,
+                  onLanguageChanged: _setLanguage,
+                  onComplete: _completeOnboarding,
                 )
-              : PinGate(
-                  hasPin: _hasPin,
-                  onSetPin: _setPin,
-                  onUnlock: _unlock,
-                  biometricsEnabled: _biometricsEnabled,
-                  onBiometricUnlock: _unlockWithBiometrics,
-                  onLockRemaining: _pinLockRemaining,
-                ),
+              : _unlocked
+                  ? CoinlyHome(
+                      dark: _dark,
+                      storage: widget.storage,
+                      initialData: _initialData,
+                      initialCards: _initialCards,
+                      onThemeChanged: () => setState(() => _dark = !_dark),
+                      hasPin: _hasPin,
+                      biometricsEnabled: _biometricsEnabled,
+                      onSetPin: _setPin,
+                      onVerifyPin: _verifyPin,
+                      onRemovePin: _removePin,
+                      onEnableBiometrics: _enableBiometrics,
+                      onSetBiometricsEnabled: _setBiometricsEnabled,
+                      language: _language,
+                      onLanguageChanged: _setLanguage,
+                    )
+                  : PinGate(
+                      hasPin: _hasPin,
+                      onSetPin: _setPin,
+                      onUnlock: _unlock,
+                      biometricsEnabled: _biometricsEnabled,
+                      onBiometricUnlock: _unlockWithBiometrics,
+                      onLockRemaining: _pinLockRemaining,
+                    ),
     );
   }
 }
@@ -372,6 +726,231 @@ class LaunchSplashPage extends StatelessWidget {
       );
 }
 
+class OnboardingPage extends StatefulWidget {
+  const OnboardingPage({
+    super.key,
+    required this.language,
+    required this.onLanguageChanged,
+    required this.onComplete,
+  });
+
+  final AppLanguage language;
+  final Future<void> Function(AppLanguage language) onLanguageChanged;
+  final Future<void> Function(bool loadDemo) onComplete;
+
+  @override
+  State<OnboardingPage> createState() => _OnboardingPageState();
+}
+
+class _OnboardingPageState extends State<OnboardingPage> {
+  final _controller = PageController();
+  var _page = 0;
+  var _working = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _finish(bool loadDemo) async {
+    if (_working) return;
+    setState(() => _working = true);
+    try {
+      await widget.onComplete(loadDemo);
+    } catch (_) {
+      if (mounted) {
+        setState(() => _working = false);
+        _showNotice(context, 'Не удалось подготовить приложение');
+      }
+    }
+  }
+
+  Future<void> _selectLanguage() async {
+    final selected = await showDialog<AppLanguage>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('Выберите язык'),
+        children: AppLanguage.values
+            .map(
+              (language) => SimpleDialogOption(
+                onPressed: () => Navigator.pop(context, language),
+                child: Row(children: [
+                  Text(language.label),
+                  const Spacer(),
+                  if (language == widget.language)
+                    const Icon(Icons.check_rounded, color: _amber),
+                ]),
+              ),
+            )
+            .toList(),
+      ),
+    );
+    if (selected == null || selected == widget.language) return;
+    await widget.onLanguageChanged(selected);
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 14, 24, 28),
+            child: Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    TextButton.icon(
+                      onPressed: _working ? null : _selectLanguage,
+                      icon: const Icon(Icons.language_rounded, size: 18),
+                      label: Text(widget.language.label),
+                    ),
+                    _page < 2
+                        ? TextButton(
+                            onPressed: _working ? null : () => _finish(false),
+                            child: const Text('Пропустить'),
+                          )
+                        : const SizedBox(width: 72, height: 40),
+                  ],
+                ),
+                Expanded(
+                  child: PageView(
+                    controller: _controller,
+                    onPageChanged: (page) => setState(() => _page = page),
+                    children: const [
+                      _OnboardingSlide(
+                        icon: Icons.account_balance_wallet_rounded,
+                        color: _amber,
+                        title: 'Ваши деньги — под контролем',
+                        description:
+                            'Добавляйте счета, фиксируйте расходы и всегда знайте свой общий баланс.',
+                      ),
+                      _OnboardingSlide(
+                        icon: Icons.auto_graph_rounded,
+                        color: _mint,
+                        title: 'Понятная аналитика',
+                        description:
+                            'Доходы, расходы и динамика баланса собираются автоматически из ваших операций.',
+                      ),
+                      _OnboardingSlide(
+                        icon: Icons.insights_rounded,
+                        color: Color(0xFFC4A5FF),
+                        title: 'Начнём?',
+                        description:
+                            'Можно начать с чистого листа или загрузить пример с вымышленными данными, чтобы посмотреть возможности Coinly.',
+                      ),
+                    ],
+                  ),
+                ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: List.generate(
+                    3,
+                    (index) => AnimatedContainer(
+                      duration: _quickMotion,
+                      margin: const EdgeInsets.symmetric(horizontal: 4),
+                      width: index == _page ? 22 : 7,
+                      height: 7,
+                      decoration: BoxDecoration(
+                        color: index == _page ? _amber : _muted,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                if (_working)
+                  const SizedBox(
+                    height: 52,
+                    child: Center(child: CircularProgressIndicator()),
+                  )
+                else if (_page < 2)
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: () => _controller.nextPage(
+                        duration: _quickMotion,
+                        curve: _motionCurve,
+                      ),
+                      child: const Text('Далее'),
+                    ),
+                  )
+                else ...[
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: () => _finish(true),
+                      icon: const Icon(Icons.visibility_rounded),
+                      label: const Text('Посмотреть пример'),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton(
+                      onPressed: () => _finish(false),
+                      child: const Text('Начать с чистого листа'),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      );
+}
+
+class _OnboardingSlide extends StatelessWidget {
+  const _OnboardingSlide({
+    required this.icon,
+    required this.color,
+    required this.title,
+    required this.description,
+  });
+
+  final IconData icon;
+  final Color color;
+  final String title;
+  final String description;
+
+  @override
+  Widget build(BuildContext context) => Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 360),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 108,
+                height: 108,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: .14),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: color.withValues(alpha: .35)),
+                ),
+                child: Icon(icon, size: 52, color: color),
+              ),
+              const SizedBox(height: 34),
+              Text(
+                title,
+                textAlign: TextAlign.center,
+                style: Theme.of(context)
+                    .textTheme
+                    .headlineMedium
+                    ?.copyWith(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                description,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: _muted, height: 1.45),
+              ),
+            ],
+          ),
+        ),
+      );
+}
+
 class CoinlyHome extends StatefulWidget {
   const CoinlyHome({
     super.key,
@@ -387,6 +966,8 @@ class CoinlyHome extends StatefulWidget {
     required this.onRemovePin,
     required this.onEnableBiometrics,
     required this.onSetBiometricsEnabled,
+    required this.language,
+    required this.onLanguageChanged,
   });
   final bool dark;
   final AppStorage storage;
@@ -400,6 +981,8 @@ class CoinlyHome extends StatefulWidget {
   final Future<void> Function() onRemovePin;
   final Future<bool> Function() onEnableBiometrics;
   final Future<void> Function(bool enabled) onSetBiometricsEnabled;
+  final AppLanguage language;
+  final Future<void> Function(AppLanguage language) onLanguageChanged;
 
   @override
   State<CoinlyHome> createState() => _CoinlyHomeState();
@@ -805,6 +1388,8 @@ class _CoinlyHomeState extends State<CoinlyHome> {
         onImportData: _importData,
         currency: _currency,
         onCurrencyChanged: _changeCurrency,
+        language: widget.language,
+        onLanguageChanged: widget.onLanguageChanged,
         onClearData: _clearData,
       ),
     ));
@@ -852,7 +1437,7 @@ class _CoinlyHomeState extends State<CoinlyHome> {
         'data': _dataSnapshot().toJson(),
       })));
       final target = await FilePicker.saveFile(
-        dialogTitle: 'Куда сохранить резервную копию?',
+        dialogTitle: _tr('Куда сохранить резервную копию?'),
         fileName: fileName,
         bytes: bytes,
         mimeType: 'application/json',
@@ -869,7 +1454,7 @@ class _CoinlyHomeState extends State<CoinlyHome> {
   Future<void> _importData() async {
     try {
       final file = await FilePicker.pickFile(
-        dialogTitle: 'Выберите резервную копию Coinly',
+        dialogTitle: _tr('Выберите резервную копию Coinly'),
         type: FileType.custom,
         allowedExtensions: const ['json'],
       );
@@ -1065,6 +1650,8 @@ class SettingsPage extends StatefulWidget {
     required this.onImportData,
     required this.currency,
     required this.onCurrencyChanged,
+    required this.language,
+    required this.onLanguageChanged,
     required this.onClearData,
   });
 
@@ -1079,6 +1666,8 @@ class SettingsPage extends StatefulWidget {
   final Future<void> Function() onImportData;
   final String currency;
   final Future<void> Function(String currency) onCurrencyChanged;
+  final AppLanguage language;
+  final Future<void> Function(AppLanguage language) onLanguageChanged;
   final Future<void> Function() onClearData;
 
   @override
@@ -1092,6 +1681,7 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _checkingBiometrics = true;
   bool _handlingBackup = false;
   late String _currency;
+  late AppLanguage _language;
 
   @override
   void initState() {
@@ -1099,6 +1689,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _hasPin = widget.hasPin;
     _biometricsEnabled = widget.biometricsEnabled;
     _currency = widget.currency;
+    _language = widget.language;
     _checkBiometrics();
   }
 
@@ -1204,6 +1795,31 @@ class _SettingsPageState extends State<SettingsPage> {
     if (selected == null || selected == _currency) return;
     setState(() => _currency = selected);
     await widget.onCurrencyChanged(selected);
+  }
+
+  Future<void> _selectLanguage() async {
+    final selected = await showDialog<AppLanguage>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('Язык интерфейса'),
+        children: AppLanguage.values
+            .map(
+              (language) => SimpleDialogOption(
+                onPressed: () => Navigator.pop(context, language),
+                child: Row(children: [
+                  Text(language.label),
+                  const Spacer(),
+                  if (language == _language)
+                    const Icon(Icons.check_rounded, color: _amber),
+                ]),
+              ),
+            )
+            .toList(),
+      ),
+    );
+    if (selected == null || selected == _language) return;
+    setState(() => _language = selected);
+    await widget.onLanguageChanged(selected);
   }
 
   @override
@@ -1316,6 +1932,14 @@ class _SettingsPageState extends State<SettingsPage> {
                         title: 'Основная валюта',
                         subtitle: _currency,
                         onTap: _selectCurrency,
+                      ),
+                      const SizedBox(height: 10),
+                      _SettingsRow(
+                        icon: Icons.language_rounded,
+                        color: const Color(0xFFC7A7FF),
+                        title: 'Язык интерфейса',
+                        subtitle: _language.label,
+                        onTap: _selectLanguage,
                       ),
                       const SizedBox(height: 10),
                       _SettingsRow(
@@ -1773,7 +2397,7 @@ class _PinCellsFieldState extends State<PinCellsField> {
           Semantics(
             textField: true,
             obscured: true,
-            label: 'PIN-код, 4 цифры',
+            label: _tr('PIN-код, 4 цифры'),
             child: IgnorePointer(
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -2053,7 +2677,7 @@ class _TopLine extends StatelessWidget {
           const Spacer(),
           IconButton(
             onPressed: onSettings,
-            tooltip: 'Настройки',
+            tooltip: _tr('Настройки'),
             icon: const Icon(Icons.settings_outlined),
             style: IconButton.styleFrom(
               backgroundColor: _surface,
@@ -2275,7 +2899,9 @@ class _BalanceGoalsCarouselState extends State<BalanceGoalsCarousel> {
             left: 0,
             right: 0,
             child: Semantics(
-              label: 'Слайд ${_page + 1} из $count',
+              label: _appLanguage == AppLanguage.english
+                  ? 'Slide ${_page + 1} of $count'
+                  : 'Слайд ${_page + 1} из $count',
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: List.generate(
@@ -2386,7 +3012,7 @@ class _SavingsGoalCard extends StatelessWidget {
                 const Spacer(),
                 IconButton(
                   onPressed: onAddGoal,
-                  tooltip: 'Добавить цель накопления',
+                  tooltip: _tr('Добавить цель накопления'),
                   icon: const Icon(Icons.add_rounded, size: 19),
                   color: _amber,
                   visualDensity: VisualDensity.compact,
@@ -3149,7 +3775,7 @@ class CardDetailsTile extends StatelessWidget {
                     overflow: TextOverflow.ellipsis),
               ])),
           IconButton(
-            tooltip: 'Копировать номер карты',
+            tooltip: _tr('Копировать номер карты'),
             onPressed: onCopyNumber,
             icon: const Icon(Icons.copy_outlined, size: 20),
           ),
@@ -3238,16 +3864,16 @@ class _CardDetailsFormSheetState extends State<CardDetailsFormSheet> {
                       controller: title,
                       textInputAction: TextInputAction.next,
                       decoration:
-                          const InputDecoration(labelText: 'Название карты')),
+                          InputDecoration(labelText: _tr('Название карты'))),
                   const SizedBox(height: 10),
                   TextField(
                       controller: bank,
                       textInputAction: TextInputAction.next,
-                      decoration: const InputDecoration(labelText: 'Банк')),
+                      decoration: InputDecoration(labelText: _tr('Банк'))),
                   const SizedBox(height: 10),
                   DropdownButtonFormField<String>(
                       initialValue: currency,
-                      decoration: const InputDecoration(labelText: 'Валюта'),
+                      decoration: InputDecoration(labelText: _tr('Валюта')),
                       items: const ['BYN', 'RUB', 'USD', 'EUR']
                           .map((item) =>
                               DropdownMenuItem(value: item, child: Text(item)))
@@ -3263,17 +3889,17 @@ class _CardDetailsFormSheetState extends State<CardDetailsFormSheet> {
                       enableIMEPersonalizedLearning: false,
                       maxLength: 19,
                       inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                      decoration: const InputDecoration(
-                          labelText: 'Номер карты',
-                          hintText: '16–19 цифр',
+                      decoration: InputDecoration(
+                          labelText: _tr('Номер карты'),
+                          hintText: _tr('16–19 цифр'),
                           counterText: '')),
                   const SizedBox(height: 10),
                   TextField(
                       controller: expiry,
                       keyboardType: TextInputType.datetime,
                       textInputAction: TextInputAction.done,
-                      decoration: const InputDecoration(
-                          labelText: 'Срок действия', hintText: 'MM/YY')),
+                      decoration: InputDecoration(
+                          labelText: _tr('Срок действия'), hintText: 'MM/YY')),
                   const SizedBox(height: 22),
                   SizedBox(
                       width: double.infinity,
@@ -3327,7 +3953,7 @@ class _CategoriesPageState extends State<CategoriesPage> {
                   controller: controller,
                   autofocus: true,
                   decoration:
-                      const InputDecoration(hintText: 'Например, Обучение')),
+                      InputDecoration(hintText: _tr('Например, Обучение'))),
               actions: [
                 TextButton(
                     onPressed: () => Navigator.pop(context),
@@ -3758,7 +4384,7 @@ class MonthlyFlowChart extends StatelessWidget {
     final highest = data.fold<double>(1,
         (value, item) => math.max(value, math.max(item.income, item.expense)));
     return Semantics(
-      label: 'Доходы и расходы за последние шесть месяцев',
+      label: _tr('Доходы и расходы за последние шесть месяцев'),
       child: SizedBox(
         height: 158,
         child: Column(
@@ -3792,15 +4418,17 @@ class MonthlyFlowChart extends StatelessWidget {
                                   _FlowBar(
                                     height: item.income / highest,
                                     color: _mint,
-                                    label:
-                                        '${_monthShort(item.month)}: доходы ${_money(item.income)} $_displayCurrency',
+                                    label: _appLanguage == AppLanguage.english
+                                        ? '${_monthShort(item.month)}: income ${_money(item.income)} $_displayCurrency'
+                                        : '${_monthShort(item.month)}: доходы ${_money(item.income)} $_displayCurrency',
                                   ),
                                   const SizedBox(width: 3),
                                   _FlowBar(
                                     height: item.expense / highest,
                                     color: _coral,
-                                    label:
-                                        '${_monthShort(item.month)}: расходы ${_money(item.expense)} $_displayCurrency',
+                                    label: _appLanguage == AppLanguage.english
+                                        ? '${_monthShort(item.month)}: expenses ${_money(item.expense)} $_displayCurrency'
+                                        : '${_monthShort(item.month)}: расходы ${_money(item.expense)} $_displayCurrency',
                                   ),
                                 ],
                               ),
@@ -3872,7 +4500,7 @@ class _FlowBar extends StatelessWidget {
 }
 
 String _monthShort(DateTime date) {
-  const months = [
+  const russianMonths = [
     'янв',
     'фев',
     'мар',
@@ -3886,6 +4514,22 @@ String _monthShort(DateTime date) {
     'ноя',
     'дек'
   ];
+  const englishMonths = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+  final months =
+      _appLanguage == AppLanguage.english ? englishMonths : russianMonths;
   return months[date.month - 1];
 }
 
@@ -4081,8 +4725,10 @@ class ExpenseDonut extends StatelessWidget {
             child: Center(
               child: Semantics(
                 label: selected == null
-                    ? 'Всего расходов ${_money(total)} $_displayCurrency'
-                    : '${selected.name}: ${_money(selected.amount)} $_displayCurrency',
+                    ? (_appLanguage == AppLanguage.english
+                        ? 'Total expenses ${_money(total)} $_displayCurrency'
+                        : 'Всего расходов ${_money(total)} $_displayCurrency')
+                    : '${_tr(selected.name)}: ${_money(selected.amount)} $_displayCurrency',
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -4206,7 +4852,8 @@ class _BalanceChartState extends State<BalanceChart> {
           final point = selected == null ? null : history[selected];
           final offset = selected == null ? null : offsets[selected];
           return Semantics(
-            label: 'Динамика баланса. Нажмите на точку, чтобы увидеть значение',
+            label: _tr(
+                'Динамика баланса. Нажмите на точку, чтобы увидеть значение'),
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTapUp: (details) => _selectPoint(details, size, history),
@@ -4470,7 +5117,7 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
                     const SizedBox(width: 6),
                     if (widget.transaction != null)
                       IconButton(
-                        tooltip: 'Удалить операцию',
+                        tooltip: _tr('Удалить операцию'),
                         visualDensity: VisualDensity.compact,
                         onPressed: () => Navigator.pop(
                             context, const TransactionEditorResult.delete()),
@@ -4537,8 +5184,8 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
                     textInputAction: TextInputAction.done,
                     maxLines: 1,
                     textAlignVertical: TextAlignVertical.center,
-                    decoration: const InputDecoration(
-                        labelText: 'Комментарий (необязательно)',
+                    decoration: InputDecoration(
+                        labelText: _tr('Комментарий (необязательно)'),
                         prefixIcon: Icon(Icons.edit_outlined))),
                 Align(
                   alignment: Alignment.centerLeft,
@@ -4738,7 +5385,7 @@ class _CategoryManagerSheetState extends State<CategoryManagerSheet> {
                   controller: controller,
                   autofocus: true,
                   decoration:
-                      const InputDecoration(hintText: 'Например, Обучение')),
+                      InputDecoration(hintText: _tr('Например, Обучение'))),
               actions: [
                 TextButton(
                     onPressed: () => Navigator.pop(context),
@@ -4881,7 +5528,7 @@ class _EditAccountSheetState extends State<EditAccountSheet> {
                 maxLength: 60,
                 textCapitalization: TextCapitalization.sentences,
                 textInputAction: TextInputAction.next,
-                decoration: const InputDecoration(labelText: 'Название')),
+                decoration: InputDecoration(labelText: _tr('Название'))),
             const SizedBox(height: 8),
             TextField(
                 controller: balance,
@@ -4890,7 +5537,7 @@ class _EditAccountSheetState extends State<EditAccountSheet> {
                 inputFormatters: [_moneyInputFormatter],
                 textInputAction: TextInputAction.done,
                 decoration: InputDecoration(
-                    labelText: 'Баланс', suffixText: _displayCurrency)),
+                    labelText: _tr('Баланс'), suffixText: _displayCurrency)),
             const SizedBox(height: 22),
             SizedBox(
                 width: double.infinity,
@@ -4969,13 +5616,13 @@ class _AddAccountSheetState extends State<AddAccountSheet> {
                 controller: name,
                 autofocus: true,
                 maxLength: 60,
-                decoration: const InputDecoration(
-                    labelText: 'Название',
-                    hintText: 'Например, карта для покупок')),
+                decoration: InputDecoration(
+                    labelText: _tr('Название'),
+                    hintText: _tr('Например, карта для покупок'))),
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(
                 initialValue: type,
-                decoration: const InputDecoration(labelText: 'Тип счёта'),
+                decoration: InputDecoration(labelText: _tr('Тип счёта')),
                 items: const [
                   'Карта',
                   'Кошелёк',
@@ -4993,7 +5640,8 @@ class _AddAccountSheetState extends State<AddAccountSheet> {
                     const TextInputType.numberWithOptions(decimal: true),
                 inputFormatters: [_moneyInputFormatter],
                 decoration: InputDecoration(
-                    labelText: 'Текущий баланс', suffixText: _displayCurrency)),
+                    labelText: _tr('Текущий баланс'),
+                    suffixText: _displayCurrency)),
             const SizedBox(height: 22),
             SizedBox(
                 width: double.infinity,
@@ -5146,9 +5794,9 @@ class _SavingsGoalSheetState extends State<SavingsGoalSheet> {
                   maxLength: 48,
                   textCapitalization: TextCapitalization.sentences,
                   textInputAction: TextInputAction.next,
-                  decoration: const InputDecoration(
-                    labelText: 'Что хотите накопить?',
-                    hintText: 'Например, новый телефон',
+                  decoration: InputDecoration(
+                    labelText: _tr('Что хотите накопить?'),
+                    hintText: _tr('Например, новый телефон'),
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -5159,7 +5807,7 @@ class _SavingsGoalSheetState extends State<SavingsGoalSheet> {
                   textInputAction: TextInputAction.next,
                   inputFormatters: [_moneyInputFormatter],
                   decoration: InputDecoration(
-                    labelText: 'Сумма цели',
+                    labelText: _tr('Сумма цели'),
                     suffixText: _displayCurrency,
                   ),
                 ),
@@ -5172,7 +5820,7 @@ class _SavingsGoalSheetState extends State<SavingsGoalSheet> {
                   inputFormatters: [_moneyInputFormatter],
                   onSubmitted: (_) => _save(),
                   decoration: InputDecoration(
-                    labelText: 'Уже накоплено',
+                    labelText: _tr('Уже накоплено'),
                     hintText: '0',
                     suffixText: _displayCurrency,
                   ),
@@ -5510,12 +6158,14 @@ class CardDetails {
 }
 
 class AppStorage {
+  static const _languageKey = 'coinly_interface_language_v1';
   static const _dataKey = 'coinly_data_v2';
   static const _legacyDataKey = 'coinly_data_v1';
   static const _cardsKey = 'coinly_card_details_v3';
   static const _previousCardsKey = 'coinly_card_details_v2';
   static const _legacyCardsKey = 'coinly_card_details_v1';
   static const _financialClearMarkerKey = 'coinly_financial_clear_pending_v1';
+  static const _onboardingCompletedKey = 'coinly_onboarding_completed_v1';
   static const _pinHashKey = 'coinly_pin_hash_v1';
   static const _pinSaltKey = 'coinly_pin_salt_v1';
   static const _biometricsKey = 'coinly_biometrics_enabled_v1';
@@ -5527,6 +6177,25 @@ class AppStorage {
   static final _secure = FlutterSecureStorage(
     aOptions: AndroidOptions(),
   );
+
+  Future<AppLanguage> loadLanguage() async {
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      return preferences.getString(_languageKey) == 'en'
+          ? AppLanguage.english
+          : AppLanguage.russian;
+    } catch (_) {
+      return AppLanguage.russian;
+    }
+  }
+
+  Future<void> saveLanguage(AppLanguage language) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString(
+      _languageKey,
+      language == AppLanguage.english ? 'en' : 'ru',
+    );
+  }
 
   Future<AppData?> loadData() async {
     try {
@@ -5606,6 +6275,17 @@ class AppStorage {
       // The next app start will retry while the recovery marker remains.
     }
   }
+
+  Future<bool> onboardingCompleted() async {
+    try {
+      return await _secure.read(key: _onboardingCompletedKey) == 'true';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> setOnboardingCompleted() =>
+      _secure.write(key: _onboardingCompletedKey, value: 'true');
 
   Future<void> _finishFinancialClear(String marker) async {
     final payload = Map<String, dynamic>.from(jsonDecode(marker) as Map);
@@ -5884,6 +6564,123 @@ class AppData {
         currency: currency,
       );
 
+  factory AppData.demo() {
+    final categories = _defaultCategories();
+    final categoryByName = {
+      for (final category in categories) category.name: category,
+    };
+    final accounts = [
+      BudgetAccount('Основная карта', 'Карта', 3540.80,
+          Icons.credit_card_rounded, _amber),
+      BudgetAccount('Наличные', 'Кошелёк', 428.50,
+          Icons.account_balance_wallet_rounded, _mint),
+      BudgetAccount('Накопления', 'Накопления', 2600, Icons.savings_rounded,
+          const Color(0xFFC4A5FF)),
+    ];
+    final now = DateTime.now();
+    final random = math.Random(26082026);
+    final transactions = <MoneyTransaction>[];
+    const expensePlan = [
+      'Продукты',
+      'Транспорт',
+      'Кафе',
+      'Продукты',
+      'Покупки',
+      'Дом',
+      'Продукты',
+      'Здоровье',
+      'Кафе',
+      'Транспорт',
+      'Покупки',
+    ];
+
+    for (var monthIndex = 0; monthIndex < 6; monthIndex++) {
+      final month = DateTime(now.year, now.month - 5 + monthIndex, 1);
+      final daysInMonth = monthIndex == 5
+          ? math.max(1, now.day)
+          : DateTime(month.year, month.month + 1, 0).day;
+      DateTime dateFor(int seed) =>
+          DateTime(month.year, month.month, 1 + seed % daysInMonth);
+
+      final salaryDate = dateFor(4);
+      transactions.add(MoneyTransaction(
+        'Зарплата',
+        'Компания · ${_operationDateLabel(salaryDate)}',
+        2250 + monthIndex * 70,
+        Icons.work_rounded,
+        _mint,
+        kind: TransactionKind.income,
+        account: 'Основная карта',
+        date: salaryDate,
+      ));
+
+      for (var operationIndex = 0; operationIndex < 31; operationIndex++) {
+        final categoryName =
+            expensePlan[(operationIndex + monthIndex) % expensePlan.length];
+        final category = categoryByName[categoryName]!;
+        final amount = switch (categoryName) {
+          'Продукты' => 35 + random.nextInt(95),
+          'Транспорт' => 3 + random.nextInt(24),
+          'Кафе' => 8 + random.nextInt(31),
+          'Дом' => 25 + random.nextInt(135),
+          'Здоровье' => 12 + random.nextInt(68),
+          _ => 18 + random.nextInt(190),
+        }
+            .toDouble();
+        final date = dateFor(operationIndex * 3 + monthIndex * 5);
+        final account = operationIndex % 6 == 0 ? 'Наличные' : 'Основная карта';
+        transactions.add(MoneyTransaction(
+          categoryName,
+          '$account · ${_operationDateLabel(date)}',
+          -amount,
+          category.icon,
+          category.color,
+          account: account,
+          date: date,
+        ));
+      }
+
+      final savingsDate = dateFor(11);
+      transactions.add(MoneyTransaction(
+        'В накопления',
+        'Основная карта → Накопления',
+        250,
+        Icons.swap_horiz_rounded,
+        _amber,
+        kind: TransactionKind.transfer,
+        account: 'Накопления',
+        fromAccount: 'Основная карта',
+        date: savingsDate,
+      ));
+      final cashDate = dateFor(19);
+      transactions.add(MoneyTransaction(
+        'Снять наличные',
+        'Основная карта → Наличные',
+        120,
+        Icons.swap_horiz_rounded,
+        _amber,
+        kind: TransactionKind.transfer,
+        account: 'Наличные',
+        fromAccount: 'Основная карта',
+        date: cashDate,
+      ));
+    }
+
+    transactions.sort((left, right) => _dateOf(right).compareTo(_dateOf(left)));
+    return AppData(
+      transactions: transactions,
+      balance:
+          accounts.fold<double>(0, (sum, account) => sum + account.balance),
+      accounts: accounts,
+      categories: categories,
+      goals: [
+        SavingsGoal('Подушка безопасности', 5000, 2600, _mint),
+        SavingsGoal('Отпуск', 3200, 1180, _amber),
+      ],
+      currency: 'BYN',
+    );
+  }
+
   static List<FinanceCategory> _defaultCategories() => [
         FinanceCategory('Продукты', Icons.shopping_basket_rounded, _mint),
         FinanceCategory(
@@ -6114,17 +6911,19 @@ class _PinGateState extends State<PinGate> {
 }
 
 String _money(double value) {
-  final text = value.toStringAsFixed(2).replaceAll('.', ',');
-  final parts = text.split(',');
+  final decimal = _appLanguage == AppLanguage.english ? '.' : ',';
+  final separator = _appLanguage == AppLanguage.english ? ',' : ' ';
+  final text = value.toStringAsFixed(2);
+  final parts = text.split('.');
   final chars = parts.first.split('').reversed.toList();
   final grouped = <String>[];
   for (var i = 0; i < chars.length; i++) {
     if (i > 0 && i % 3 == 0) {
-      grouped.add(' ');
+      grouped.add(separator);
     }
     grouped.add(chars[i]);
   }
-  return '${grouped.reversed.join()} ,${parts[1]}'.replaceAll(' ,', ',');
+  return '${grouped.reversed.join()}$decimal${parts[1]}';
 }
 
 String _lastFour(String number) {
@@ -6150,7 +6949,7 @@ bool _sameMonth(DateTime first, DateTime second) =>
     first.year == second.year && first.month == second.month;
 
 String _monthTitle(DateTime date) {
-  const names = [
+  const russianNames = [
     'январь',
     'февраль',
     'март',
@@ -6164,6 +6963,22 @@ String _monthTitle(DateTime date) {
     'ноябрь',
     'декабрь'
   ];
+  const englishNames = [
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+  ];
+  final names =
+      _appLanguage == AppLanguage.english ? englishNames : russianNames;
   return '${names[date.month - 1]} ${date.year}';
 }
 
@@ -6172,15 +6987,15 @@ String _operationDateLabel(DateTime date) {
   if (date.year == today.year &&
       date.month == today.month &&
       date.day == today.day) {
-    return 'Сегодня';
+    return _appLanguage == AppLanguage.english ? 'Today' : 'Сегодня';
   }
   final yesterday = today.subtract(const Duration(days: 1));
   if (date.year == yesterday.year &&
       date.month == yesterday.month &&
       date.day == yesterday.day) {
-    return 'Вчера';
+    return _appLanguage == AppLanguage.english ? 'Yesterday' : 'Вчера';
   }
-  const names = [
+  const russianNames = [
     'янв.',
     'фев.',
     'мар.',
@@ -6194,7 +7009,25 @@ String _operationDateLabel(DateTime date) {
     'ноя.',
     'дек.'
   ];
-  return '${date.day} ${names[date.month - 1]}';
+  const englishNames = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+  final names =
+      _appLanguage == AppLanguage.english ? englishNames : russianNames;
+  return _appLanguage == AppLanguage.english
+      ? '${names[date.month - 1]} ${date.day}'
+      : '${date.day} ${names[date.month - 1]}';
 }
 
 void _showNotice(BuildContext context, String text) =>
