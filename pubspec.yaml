@@ -1,7 +1,7 @@
 name: coinly
 description: Локальный прототип домашнего бюджета Coinly.
 publish_to: "none"
-version: 1.0.0+5
+version: 1.0.2+6
 
 environment:
   sdk: ">=3.2.0 <4.0.0"
@@ -26,6 +26,10 @@ flutter:
   uses-material-design: true
   assets:
     - assets/images/coinly_logo.jpg
+  fonts:
+    - family: nbrb
+      fonts:
+        - asset: nbrb_font/nbrb.ttf
 
 flutter_launcher_icons:
   android: true

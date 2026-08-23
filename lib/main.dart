@@ -6,6 +6,8 @@ import 'package:crypto/crypto.dart';
 import 'package:file_picker/file_picker.dart' hide AndroidOptions;
 import 'package:flutter/material.dart' hide Text;
 import 'package:flutter/material.dart' as material show Text;
+import 'package:flutter/rendering.dart'
+    show debugPaintBaselinesEnabled, debugPaintTextLayoutBoxes;
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:local_auth/local_auth.dart';
@@ -16,6 +18,7 @@ import 'package:share_plus/share_plus.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  _disableTextDebugOverlays();
   final storage = AppStorage();
   await storage.resetPinForFourDigitMigration();
   await storage.recoverPendingFinancialClear();
@@ -26,13 +29,21 @@ Future<void> main() async {
     storage.biometricsEnabled(),
     storage.onboardingCompleted(),
     storage.loadLanguage(),
+    storage.interfaceTourInProgress(),
   ]);
-  final data = startupValues[0] as AppData?;
-  final cards = startupValues[1] as List<CardDetails>?;
+  var data = startupValues[0] as AppData?;
+  var cards = startupValues[1] as List<CardDetails>?;
   final hasPin = startupValues[2] as bool;
   final biometricsEnabled = startupValues[3] as bool;
   var onboardingCompleted = startupValues[4] as bool;
   final language = startupValues[5] as AppLanguage;
+  final interfaceTourInProgress = startupValues[6] as bool;
+  if (interfaceTourInProgress) {
+    await storage.resetInterruptedInterfaceTour();
+    data = null;
+    cards = null;
+    onboardingCompleted = false;
+  }
   if (!onboardingCompleted && (data != null || cards != null)) {
     await storage.setOnboardingCompleted();
     onboardingCompleted = true;
@@ -48,6 +59,15 @@ Future<void> main() async {
   ));
 }
 
+/// Keeps Flutter Inspector's text guides out of the guided-tour UI in debug.
+void _disableTextDebugOverlays() {
+  assert(() {
+    debugPaintBaselinesEnabled = false;
+    debugPaintTextLayoutBoxes = false;
+    return true;
+  }());
+}
+
 const _amber = Color(0xFFF2B84B);
 const _mint = Color(0xFF6BD2B0);
 const _coral = Color(0xFFFF887A);
@@ -59,7 +79,15 @@ const _muted = Color(0xFF9FA9B8);
 const _motionCurve = Cubic(.22, 1, .36, 1);
 const _quickMotion = Duration(milliseconds: 180);
 const _supportedCurrencies = ['BYN', 'RUB', 'USD', 'EUR'];
-String _displayCurrency = 'BYN';
+String _currencySymbol(String currency) => switch (currency) {
+      'BYN' => String.fromCharCode(0xE901),
+      'RUB' => '₽',
+      'USD' => r'$',
+      'EUR' => '€',
+      _ => currency,
+    };
+
+String _displayCurrency = _currencySymbol('BYN');
 AppLanguage _appLanguage = AppLanguage.russian;
 final _appLanguageNotifier = ValueNotifier<AppLanguage>(_appLanguage);
 
@@ -238,6 +266,7 @@ const _englishStrings = <String, String>{
   'Операции': 'Transactions',
   'История операций': 'Transaction history',
   'Добавить счёт': 'Add account',
+  'Создать первый счёт': 'Create your first account',
   'Реквизиты карт': 'Card details',
   'Добавить реквизиты карты': 'Add card details',
   'Копировать номер карты': 'Copy card number',
@@ -644,11 +673,15 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
   Future<void> _completeOnboarding(bool startInterfaceTour) async {
     final data = startInterfaceTour ? AppData.demo() : AppData.empty();
     final cards = <CardDetails>[];
-    await Future.wait([
-      widget.storage.saveData(data),
-      widget.storage.saveCards(cards),
-      widget.storage.setOnboardingCompleted(),
-    ]);
+    if (startInterfaceTour) {
+      await widget.storage.beginInterfaceTour();
+    } else {
+      await Future.wait([
+        widget.storage.saveData(data),
+        widget.storage.saveCards(cards),
+        widget.storage.setOnboardingCompleted(),
+      ]);
+    }
     if (mounted) {
       setState(() {
         _initialData = data;
@@ -675,6 +708,7 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
         textTheme: base.textTheme
             .apply(
               fontFamily: 'sans-serif',
+              fontFamilyFallback: const ['nbrb'],
               bodyColor: _dark ? _ink : const Color(0xFF20242C),
               displayColor: _dark ? _ink : const Color(0xFF20242C),
             )
@@ -1298,7 +1332,7 @@ class _CoinlyHomeState extends State<CoinlyHome> {
     final addedBaseCategories = _addMissingBaseCategories(_categories);
     _goals = data.goals;
     _currency = data.currency;
-    _displayCurrency = _currency;
+    _displayCurrency = _currencySymbol(_currency);
     _cards = widget.initialCards ?? [];
     _tourActive = widget.startInterfaceTour;
     if (widget.initialData == null ||
@@ -1679,7 +1713,7 @@ class _CoinlyHomeState extends State<CoinlyHome> {
     });
     _scrollDashboardForTour(step);
     if (step == 3) return;
-    Future<void>.delayed(const Duration(seconds: 2), () {
+    Future<void>.delayed(const Duration(seconds: 1), () {
       if (mounted && _tourActive && _tourStep == step) {
         setState(() => _tourStepReady = true);
       }
@@ -1692,7 +1726,7 @@ class _CoinlyHomeState extends State<CoinlyHome> {
         return;
       }
       final maximum = _dashboardScrollController.position.maxScrollExtent;
-      final target = step == 2 ? math.min(280.0, maximum) : 0.0;
+      final target = step == 2 ? math.min(400.0, maximum) : 0.0;
       _dashboardScrollController.animateTo(
         target,
         duration: const Duration(milliseconds: 360),
@@ -1771,7 +1805,10 @@ class _CoinlyHomeState extends State<CoinlyHome> {
       _tourCompleting = false;
       _syncBalance();
     });
-    await _enqueueStorageWrite(() => widget.storage.clearFinancialData(empty));
+    await _enqueueStorageWrite(() => Future.wait([
+          widget.storage.clearFinancialData(empty),
+          widget.storage.completeInterfaceTour(),
+        ]));
   }
 
   @override
@@ -1831,6 +1868,7 @@ class _CoinlyHomeState extends State<CoinlyHome> {
         bottomNavigationBar: _NavBar(
           index: _tab,
           onChanged: _changeTab,
+          highlightedIndex: _tourActive && _tourStep == 3 ? 1 : null,
         ),
       ),
       if (_tourActive && !_tourCompleting)
@@ -1838,7 +1876,7 @@ class _CoinlyHomeState extends State<CoinlyHome> {
           left: 0,
           right: 0,
           top: 0,
-          bottom: 78,
+          bottom: MediaQuery.viewPaddingOf(context).bottom + 82,
           child: _InterfaceTourOverlay(
             step: _tourStep,
             ready: _tourStepReady,
@@ -2083,7 +2121,7 @@ class _CoinlyHomeState extends State<CoinlyHome> {
         _categories = imported.categories;
         _goals = imported.goals;
         _currency = imported.currency;
-        _displayCurrency = imported.currency;
+        _displayCurrency = _currencySymbol(imported.currency);
       });
       await _persist();
       if (mounted) _showNotice(context, 'Данные импортированы');
@@ -2163,7 +2201,7 @@ class _CoinlyHomeState extends State<CoinlyHome> {
   Future<void> _changeCurrency(String currency) async {
     setState(() {
       _currency = currency;
-      _displayCurrency = currency;
+      _displayCurrency = _currencySymbol(currency);
     });
     await _persist();
   }
@@ -3153,26 +3191,41 @@ class _InterfaceTourOverlay extends StatelessWidget {
       };
 
   double _messageTop(double height) => switch (step) {
-        0 => 324,
-        1 => 494,
-        2 => math.min(500, height - 196).toDouble(),
-        3 => height - 224,
-        4 => 382,
-        _ => 510,
+        0 => 278,
+        1 => 476,
+        2 => math.min(360, height - 176).toDouble(),
+        3 => height - 150,
+        4 => 490,
+        _ => 410,
       };
+
+  Rect? _targetRect(Size size) {
+    final width = size.width - 40;
+    final highlightedWidth = width - 10;
+    return switch (step) {
+      0 => Rect.fromLTWH(25, 132, highlightedWidth, 188),
+      1 => Rect.fromLTWH(20, 344, width, 172),
+      2 => Rect.fromLTWH(20, 258, width, 148),
+      3 => null,
+      4 => Rect.fromLTWH(16, 342, size.width - 32, 168),
+      _ => Rect.fromLTWH(20, 388, width, 60),
+    };
+  }
 
   @override
   Widget build(BuildContext context) {
+    _disableTextDebugOverlays();
     final content = _content;
     final needsTab = step == 3;
-    return Material(
-      color: Colors.transparent,
-      child: GestureDetector(
+    return GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: needsTab || !ready ? null : onAdvance,
-        child: ColoredBox(
-          color: Colors.black.withValues(alpha: .48),
-          child: SafeArea(
+        child: LayoutBuilder(
+          builder: (context, outerConstraints) => CustomPaint(
+            painter: _TourSpotlightPainter(
+              target: _targetRect(outerConstraints.biggest),
+            ),
+            child: SafeArea(
             bottom: false,
             child: LayoutBuilder(
               builder: (context, constraints) => Stack(
@@ -3213,10 +3266,12 @@ class _InterfaceTourOverlay extends StatelessWidget {
                                     color: _amber.withValues(alpha: .16),
                                     shape: BoxShape.circle,
                                   ),
-                                  child: Text('${step < 3 ? step + 1 : step}/5',
+                                  child: Text('${step + 1}/6',
                                       textAlign: TextAlign.center,
                                       style: const TextStyle(
+                                          inherit: false,
                                           color: _amber,
+                                          decoration: TextDecoration.none,
                                           fontSize: 11,
                                           height: 2.2,
                                           fontWeight: FontWeight.w800)),
@@ -3225,6 +3280,9 @@ class _InterfaceTourOverlay extends StatelessWidget {
                                 Expanded(
                                   child: Text(content.title,
                                       style: const TextStyle(
+                                          inherit: false,
+                                          color: _ink,
+                                          decoration: TextDecoration.none,
                                           fontSize: 17,
                                           fontWeight: FontWeight.w800)),
                                 ),
@@ -3232,7 +3290,11 @@ class _InterfaceTourOverlay extends StatelessWidget {
                               const SizedBox(height: 10),
                               Text(content.text,
                                   style: const TextStyle(
-                                      color: _ink, fontSize: 13, height: 1.35)),
+                                      inherit: false,
+                                      color: _ink,
+                                      decoration: TextDecoration.none,
+                                      fontSize: 13,
+                                      height: 1.35)),
                             ],
                           ),
                         ),
@@ -3240,7 +3302,7 @@ class _InterfaceTourOverlay extends StatelessWidget {
                           const Padding(
                             padding: EdgeInsets.only(top: 5),
                             child: Align(
-                              alignment: Alignment(-.42, 0),
+                              alignment: Alignment(-.47, 0),
                               child: Icon(Icons.arrow_downward_rounded,
                                   color: _amber, size: 34),
                             ),
@@ -3256,6 +3318,43 @@ class _InterfaceTourOverlay extends StatelessWidget {
       ),
     );
   }
+}
+
+class _TourSpotlightPainter extends CustomPainter {
+  const _TourSpotlightPainter({required this.target});
+
+  final Rect? target;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.saveLayer(Offset.zero & size, Paint());
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()..color = Colors.black.withValues(alpha: .54),
+    );
+    if (target != null) {
+      final highlight = RRect.fromRectAndRadius(
+        target!.inflate(5),
+        const Radius.circular(26),
+      );
+      canvas.drawRRect(highlight, Paint()..blendMode = BlendMode.clear);
+    }
+    canvas.restore();
+
+    if (target != null) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(target!.inflate(5), const Radius.circular(26)),
+        Paint()
+          ..color = _amber.withValues(alpha: .9)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.4,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _TourSpotlightPainter oldDelegate) =>
+      oldDelegate.target != target;
 }
 
 class AppPageRoute<T> extends PageRouteBuilder<T> {
@@ -3335,7 +3434,10 @@ class DashboardPage extends StatelessWidget {
           const SizedBox(height: 16),
           _SectionTitle(title: 'Счета', action: ''),
           const SizedBox(height: 8),
-          AccountsOverview(accounts: accounts),
+          if (accounts.isEmpty)
+            _CreateFirstAccountButton(onPressed: onShowAccounts)
+          else
+            AccountsOverview(accounts: accounts),
           const SizedBox(height: 16),
           Row(
             children: [
@@ -3542,16 +3644,20 @@ class _BalanceCardState extends State<BalanceCard> {
             ),
             transitionBuilder: (child, animation) =>
                 FadeTransition(opacity: animation, child: child),
-            child: Text(
-              visible
-                  ? '${_money(widget.balance)} $_displayCurrency'
-                  : '•••••• $_displayCurrency',
-              key: ValueKey(visible),
-              style: const TextStyle(
-                fontSize: 33,
-                height: 1.02,
-                fontWeight: FontWeight.w600,
-                letterSpacing: -1.35,
+            child: FittedBox(
+              alignment: Alignment.centerLeft,
+              fit: BoxFit.scaleDown,
+              child: Text(
+                visible
+                    ? '${_money(widget.balance)} $_displayCurrency'
+                    : '•••••• $_displayCurrency',
+                key: ValueKey(visible),
+                style: const TextStyle(
+                  fontSize: 33,
+                  height: 1.02,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: -1.35,
+                ),
               ),
             ),
             ),
@@ -3866,6 +3972,28 @@ class AccountsOverview extends StatefulWidget {
   State<AccountsOverview> createState() => _AccountsOverviewState();
 }
 
+class _CreateFirstAccountButton extends StatelessWidget {
+  const _CreateFirstAccountButton({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        width: double.infinity,
+        child: FilledButton.icon(
+          onPressed: onPressed,
+          icon: const Icon(Icons.account_balance_wallet_outlined),
+          label: const Text('Создать первый счёт'),
+          style: FilledButton.styleFrom(
+            minimumSize: const Size.fromHeight(54),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+            ),
+          ),
+        ),
+      );
+}
+
 class _AccountsOverviewState extends State<AccountsOverview> {
   late final PageController _pageController;
   var _pageIndex = 0;
@@ -3972,9 +4100,16 @@ class _AccountOverviewCard extends StatelessWidget {
             ),
           ),
           const Spacer(),
-          Text('${_money(account.balance)} $_displayCurrency',
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+          SizedBox(
+            width: double.infinity,
+            child: FittedBox(
+              alignment: Alignment.centerLeft,
+              fit: BoxFit.scaleDown,
+              child: Text('${_money(account.balance)} $_displayCurrency',
+                  style:
+                      const TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+            ),
+          ),
         ]),
       );
 }
@@ -4276,8 +4411,8 @@ class PlannedCard extends StatelessWidget {
                 ],
               ),
             ),
-            const Text(
-              '19,90\nBYN',
+            Text(
+              '19,90\n$_displayCurrency',
               textAlign: TextAlign.right,
               style: TextStyle(fontWeight: FontWeight.w800),
             ),
@@ -4630,7 +4765,7 @@ class CardDetailsTile extends StatelessWidget {
                 Text(card.title,
                     style: const TextStyle(fontWeight: FontWeight.w800)),
                 const SizedBox(height: 3),
-                Text('${card.bank} · ${card.currency} · •••• ${card.lastFour}',
+                Text('${card.bank} · ${_currencySymbol(card.currency)} · •••• ${card.lastFour}',
                     style: const TextStyle(color: _muted, fontSize: 12),
                     overflow: TextOverflow.ellipsis),
               ])),
@@ -5016,7 +5151,7 @@ class BudgetsPage extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Row(
+                  Row(
                     children: [
                       Text(
                         'Общий бюджет',
@@ -5035,11 +5170,11 @@ class BudgetsPage extends StatelessWidget {
                   const SizedBox(height: 13),
                   const BudgetBar(value: .64, color: _amber),
                   const SizedBox(height: 12),
-                  const Row(
+                  Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(
-                        '1 282,30 BYN',
+                        '1 282,30 $_displayCurrency',
                         style: TextStyle(fontWeight: FontWeight.w700),
                       ),
                       Text('из 2 000,00', style: TextStyle(color: _muted)),
@@ -6531,7 +6666,7 @@ class AccountPickerSheet extends StatelessWidget {
                     child: Icon(item.icon, color: item.color)),
                 title: Text(item.name,
                     style: const TextStyle(fontWeight: FontWeight.w700)),
-                subtitle: Text('${_money(item.balance)} BYN',
+                subtitle: Text('${_money(item.balance)} $_displayCurrency',
                     style: const TextStyle(color: _muted)),
                 trailing: item == selected
                     ? const Icon(Icons.check_rounded, color: _amber)
@@ -7081,9 +7216,14 @@ class _SectionTitle extends StatelessWidget {
 }
 
 class _NavBar extends StatelessWidget {
-  const _NavBar({required this.index, required this.onChanged});
+  const _NavBar({
+    required this.index,
+    required this.onChanged,
+    this.highlightedIndex,
+  });
   final int index;
   final ValueChanged<int> onChanged;
+  final int? highlightedIndex;
   @override
   Widget build(BuildContext context) {
     const items = [
@@ -7112,6 +7252,7 @@ class _NavBar extends StatelessWidget {
           child: Row(
             children: List.generate(items.length, (i) {
               final current = index == i;
+              final highlighted = highlightedIndex == i;
               return Expanded(
                 child: InkWell(
                   onTap: () => onChanged(i),
@@ -7125,10 +7266,15 @@ class _NavBar extends StatelessWidget {
                         width: current ? 42 : 34,
                         height: 29,
                         alignment: Alignment.center,
-                        decoration: BoxDecoration(
+                          decoration: BoxDecoration(
                           color: current
                               ? _amber.withValues(alpha: .16)
-                              : Colors.transparent,
+                              : highlighted
+                                  ? _amber.withValues(alpha: .11)
+                                  : Colors.transparent,
+                          border: highlighted
+                              ? Border.all(color: _amber.withValues(alpha: .8))
+                              : null,
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: AnimatedScale(
@@ -7369,6 +7515,7 @@ class AppStorage {
   static const _legacyCardsKey = 'coinly_card_details_v1';
   static const _financialClearMarkerKey = 'coinly_financial_clear_pending_v1';
   static const _onboardingCompletedKey = 'coinly_onboarding_completed_v1';
+  static const _interfaceTourKey = 'coinly_interface_tour_in_progress_v1';
   static const _pinHashKey = 'coinly_pin_hash_v1';
   static const _pinSaltKey = 'coinly_pin_salt_v1';
   static const _biometricsKey = 'coinly_biometrics_enabled_v1';
@@ -7489,6 +7636,35 @@ class AppStorage {
 
   Future<void> setOnboardingCompleted() =>
       _secure.write(key: _onboardingCompletedKey, value: 'true');
+
+  Future<bool> interfaceTourInProgress() async {
+    try {
+      return await _secure.read(key: _interfaceTourKey) == 'true';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> beginInterfaceTour() =>
+      _secure.write(key: _interfaceTourKey, value: 'true');
+
+  Future<void> completeInterfaceTour() => Future.wait([
+        _secure.delete(key: _interfaceTourKey),
+        setOnboardingCompleted(),
+      ]);
+
+  Future<void> resetInterruptedInterfaceTour() async {
+    await Future.wait([
+      _secure.delete(key: _interfaceTourKey),
+      _secure.delete(key: _onboardingCompletedKey),
+      _secure.delete(key: _dataKey),
+      _secure.delete(key: _cardsKey),
+      _secure.delete(key: _previousCardsKey),
+      _secure.delete(key: _legacyCardsKey),
+    ]);
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.remove(_legacyDataKey);
+  }
 
   Future<void> _finishFinancialClear(String marker) async {
     final payload = Map<String, dynamic>.from(jsonDecode(marker) as Map);
