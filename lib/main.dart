@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:isolate';
 import 'dart:math' as math;
@@ -11,6 +12,7 @@ import 'package:flutter/rendering.dart'
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:local_auth/local_auth.dart';
+import 'package:local_auth_android/local_auth_android.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -30,6 +32,7 @@ Future<void> main() async {
     storage.onboardingCompleted(),
     storage.loadLanguage(),
     storage.interfaceTourInProgress(),
+    storage.lockDelay(),
   ]);
   var data = startupValues[0] as AppData?;
   var cards = startupValues[1] as List<CardDetails>?;
@@ -38,6 +41,7 @@ Future<void> main() async {
   var onboardingCompleted = startupValues[4] as bool;
   final language = startupValues[5] as AppLanguage;
   final interfaceTourInProgress = startupValues[6] as bool;
+  final lockDelay = startupValues[7] as Duration;
   if (interfaceTourInProgress) {
     await storage.resetInterruptedInterfaceTour();
     data = null;
@@ -56,6 +60,7 @@ Future<void> main() async {
     biometricsEnabled: biometricsEnabled,
     onboardingCompleted: onboardingCompleted,
     initialLanguage: language,
+    initialLockDelay: lockDelay,
   ));
 }
 
@@ -88,6 +93,107 @@ String _currencySymbol(String currency) => switch (currency) {
     };
 
 String _displayCurrency = _currencySymbol('BYN');
+
+const _defaultLockDelay = Duration(seconds: 30);
+
+const _lockDelayOptions = <Duration>[
+  Duration(seconds: 30),
+  Duration(minutes: 1),
+  Duration(minutes: 2),
+  Duration(minutes: 5),
+];
+
+String _lockDelayLabel(Duration delay) => switch (delay.inSeconds) {
+      30 => 'Через 30 секунд',
+      60 => 'Через 1 минуту',
+      120 => 'Через 2 минуты',
+      300 => 'Через 5 минут',
+      _ => 'Через 30 секунд',
+    };
+
+/// A fixed-size visual currency mark. The NBRB glyph has unusual font metrics,
+/// so it must not participate in measuring a whole amount string.
+class _CurrencyMark extends StatelessWidget {
+  const _CurrencyMark({this.color, this.fontSize = 14});
+
+  final Color? color;
+  final double fontSize;
+
+  @override
+  Widget build(BuildContext context) {
+    final markColor = color ?? DefaultTextStyle.of(context).style.color ?? _ink;
+    return SizedBox(
+      width: fontSize * .68,
+      height: fontSize * 1.12,
+      child: Center(
+        child: material.Text(
+          _displayCurrency,
+          style: TextStyle(
+            fontFamily:
+                _displayCurrency == String.fromCharCode(0xE901) ? 'nbrb' : null,
+            color: markColor,
+            fontSize: fontSize * .92,
+            height: 1,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class MoneyText extends StatelessWidget {
+  const MoneyText(
+    this.amount, {
+    super.key,
+    this.style,
+    this.textAlign = TextAlign.start,
+    this.maxLines = 1,
+    this.overflow,
+  });
+
+  final String amount;
+  final TextStyle? style;
+  final TextAlign textAlign;
+  final int? maxLines;
+  final TextOverflow? overflow;
+
+  @override
+  Widget build(BuildContext context) {
+    final effectiveStyle = DefaultTextStyle.of(context).style.merge(style);
+    return material.Text.rich(
+      TextSpan(
+        style: effectiveStyle,
+        children: [
+          TextSpan(text: amount),
+          WidgetSpan(
+            alignment: PlaceholderAlignment.middle,
+            child: Padding(
+              padding: const EdgeInsets.only(left: 4),
+              child: _CurrencyMark(
+                color: effectiveStyle.color,
+                fontSize: effectiveStyle.fontSize ?? 14,
+              ),
+            ),
+          ),
+        ],
+      ),
+      textAlign: textAlign,
+      maxLines: maxLines,
+      overflow: overflow,
+    );
+  }
+}
+
+class _CurrencyInputSuffix extends StatelessWidget {
+  const _CurrencyInputSuffix();
+
+  @override
+  Widget build(BuildContext context) => const Padding(
+        padding: EdgeInsets.only(right: 14),
+        child: _CurrencyMark(color: _muted, fontSize: 17),
+      );
+}
+
 AppLanguage _appLanguage = AppLanguage.russian;
 final _appLanguageNotifier = ValueNotifier<AppLanguage>(_appLanguage);
 
@@ -108,6 +214,8 @@ const _englishStrings = <String, String>{
   'Личный бюджет': 'Personal budget',
   'Подтвердите личность для входа в Coinly':
       'Confirm your identity to open Coinly',
+  'Вход в Coinly': 'Sign in to Coinly',
+  'Подтвердите личность': 'Verify your identity',
   'Не удалось подготовить приложение': 'Could not prepare the app',
   'Пропустить': 'Skip',
   'Далее': 'Next',
@@ -213,6 +321,13 @@ const _englishStrings = <String, String>{
   'Установите PIN-код, чтобы включить': 'Set a PIN to enable it',
   'Если биометрия недоступна, для входа используется PIN.':
       'If biometrics are unavailable, your PIN is used to sign in.',
+  'Блокировать после выхода': 'Lock after leaving app',
+  'Сразу': 'Immediately',
+  'Через 30 секунд': 'After 30 seconds',
+  'Через 1 минуту': 'After 1 minute',
+  'Через 2 минуты': 'After 2 minutes',
+  'Через 5 минут': 'After 5 minutes',
+  'Нажмите ещё раз, чтобы выйти': 'Press back again to exit',
   'Данные': 'Data',
   'Экспортировать данные': 'Export data',
   'Сохранить операции, счета, категории и цели':
@@ -537,6 +652,7 @@ class CoinlyApp extends StatefulWidget {
     required this.biometricsEnabled,
     required this.onboardingCompleted,
     required this.initialLanguage,
+    required this.initialLockDelay,
   });
 
   final AppStorage storage;
@@ -546,6 +662,7 @@ class CoinlyApp extends StatefulWidget {
   final bool biometricsEnabled;
   final bool onboardingCompleted;
   final AppLanguage initialLanguage;
+  final Duration initialLockDelay;
 
   @override
   State<CoinlyApp> createState() => _CoinlyAppState();
@@ -561,6 +678,8 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
   late AppData? _initialData;
   late List<CardDetails>? _initialCards;
   late AppLanguage _language;
+  late Duration _lockDelay;
+  DateTime? _backgroundedAt;
   var _startInterfaceTour = false;
 
   @override
@@ -572,6 +691,7 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
     _initialData = widget.initialData;
     _initialCards = widget.initialCards;
     _language = widget.initialLanguage;
+    _lockDelay = widget.initialLockDelay;
     _appLanguage = _language;
     _appLanguageNotifier.value = _language;
     // PIN protection is opt-in. Until it is enabled in Settings, the local
@@ -591,11 +711,23 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (_hasPin &&
-        (state == AppLifecycleState.inactive ||
-            state == AppLifecycleState.paused ||
-            state == AppLifecycleState.detached) &&
-        mounted) {
+    if (!_hasPin) return;
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused) {
+      _backgroundedAt ??= DateTime.now();
+      return;
+    }
+    if (state == AppLifecycleState.resumed) {
+      final leftAt = _backgroundedAt;
+      _backgroundedAt = null;
+      if (leftAt != null &&
+          DateTime.now().difference(leftAt) >= _lockDelay &&
+          mounted) {
+        setState(() => _unlocked = false);
+      }
+      return;
+    }
+    if (state == AppLifecycleState.detached && mounted) {
       setState(() => _unlocked = false);
     }
   }
@@ -641,6 +773,13 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
         localizedReason: _tr('Подтвердите личность для входа в Coinly'),
         biometricOnly: true,
         persistAcrossBackgrounding: true,
+        authMessages: [
+          AndroidAuthMessages(
+            signInTitle: _tr('Вход в Coinly'),
+            signInHint: _tr('Подтвердите личность'),
+            cancelButton: _tr('Отмена'),
+          ),
+        ],
       );
       if (authenticated && mounted) setState(() => _unlocked = true);
       return authenticated;
@@ -660,6 +799,11 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
   Future<void> _setBiometricsEnabled(bool enabled) async {
     await widget.storage.setBiometricsEnabled(enabled);
     if (mounted) setState(() => _biometricsEnabled = enabled);
+  }
+
+  Future<void> _setLockDelay(Duration delay) async {
+    await widget.storage.setLockDelay(delay);
+    if (mounted) setState(() => _lockDelay = delay);
   }
 
   Future<void> _setLanguage(AppLanguage language) async {
@@ -833,7 +977,8 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
                   onComplete: _completeOnboarding,
                 )
               : _unlocked
-                  ? CoinlyHome(
+                  ? _ExitGuard(
+                      child: CoinlyHome(
                       dark: _dark,
                       storage: widget.storage,
                       initialData: _initialData,
@@ -843,13 +988,16 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
                       biometricsEnabled: _biometricsEnabled,
                       onSetPin: _setPin,
                       onVerifyPin: _verifyPin,
+                      onPinLockRemaining: _pinLockRemaining,
                       onRemovePin: _removePin,
                       onEnableBiometrics: _enableBiometrics,
                       onSetBiometricsEnabled: _setBiometricsEnabled,
+                      lockDelay: _lockDelay,
+                      onLockDelayChanged: _setLockDelay,
                       startInterfaceTour: _startInterfaceTour,
                       language: _language,
                       onLanguageChanged: _setLanguage,
-                    )
+                    ))
                   : PinGate(
                       hasPin: _hasPin,
                       onSetPin: _setPin,
@@ -860,6 +1008,45 @@ class _CoinlyAppState extends State<CoinlyApp> with WidgetsBindingObserver {
                     ),
     );
   }
+}
+
+class _ExitGuard extends StatefulWidget {
+  const _ExitGuard({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_ExitGuard> createState() => _ExitGuardState();
+}
+
+class _ExitGuardState extends State<_ExitGuard> {
+  DateTime? _firstBackPressAt;
+
+  void _onPopInvoked(bool didPop, Object? result) {
+    if (didPop) return;
+    final now = DateTime.now();
+    if (_firstBackPressAt != null &&
+        now.difference(_firstBackPressAt!) < const Duration(seconds: 2)) {
+      SystemNavigator.pop();
+      return;
+    }
+    _firstBackPressAt = now;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        const SnackBar(
+          content: Text('Нажмите ещё раз, чтобы выйти'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+  }
+
+  @override
+  Widget build(BuildContext context) => PopScope<Object?>(
+        canPop: false,
+        onPopInvokedWithResult: _onPopInvoked,
+        child: widget.child,
+      );
 }
 
 class LaunchSplashPage extends StatelessWidget {
@@ -1276,9 +1463,12 @@ class CoinlyHome extends StatefulWidget {
     required this.biometricsEnabled,
     required this.onSetPin,
     required this.onVerifyPin,
+    required this.onPinLockRemaining,
     required this.onRemovePin,
     required this.onEnableBiometrics,
     required this.onSetBiometricsEnabled,
+    required this.lockDelay,
+    required this.onLockDelayChanged,
     required this.startInterfaceTour,
     required this.language,
     required this.onLanguageChanged,
@@ -1292,9 +1482,12 @@ class CoinlyHome extends StatefulWidget {
   final bool biometricsEnabled;
   final Future<void> Function(String pin) onSetPin;
   final Future<bool> Function(String pin) onVerifyPin;
+  final Future<Duration?> Function() onPinLockRemaining;
   final Future<void> Function() onRemovePin;
   final Future<bool> Function() onEnableBiometrics;
   final Future<void> Function(bool enabled) onSetBiometricsEnabled;
+  final Duration lockDelay;
+  final Future<void> Function(Duration delay) onLockDelayChanged;
   final bool startInterfaceTour;
   final AppLanguage language;
   final Future<void> Function(AppLanguage language) onLanguageChanged;
@@ -1848,23 +2041,23 @@ class _CoinlyHomeState extends State<CoinlyHome> {
       Scaffold(
         body: SafeArea(
           child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 160),
-          switchInCurve: _motionCurve,
-          switchOutCurve: Curves.easeIn,
-          layoutBuilder: (currentChild, previousChildren) => Stack(
-            fit: StackFit.expand,
-            children: [
-              ...previousChildren,
-              if (currentChild != null) currentChild,
-            ],
+            duration: const Duration(milliseconds: 160),
+            switchInCurve: _motionCurve,
+            switchOutCurve: Curves.easeIn,
+            layoutBuilder: (currentChild, previousChildren) => Stack(
+              fit: StackFit.expand,
+              children: [
+                ...previousChildren,
+                if (currentChild != null) currentChild,
+              ],
+            ),
+            transitionBuilder: (child, animation) => FadeTransition(
+              opacity: animation,
+              child: RepaintBoundary(child: child),
+            ),
+            child: KeyedSubtree(key: ValueKey(_tab), child: pages[_tab]),
           ),
-          transitionBuilder: (child, animation) => FadeTransition(
-            opacity: animation,
-            child: RepaintBoundary(child: child),
-          ),
-          child: KeyedSubtree(key: ValueKey(_tab), child: pages[_tab]),
         ),
-      ),
         bottomNavigationBar: _NavBar(
           index: _tab,
           onChanged: _changeTab,
@@ -1893,9 +2086,12 @@ class _CoinlyHomeState extends State<CoinlyHome> {
         biometricsEnabled: widget.biometricsEnabled,
         onSetPin: widget.onSetPin,
         onVerifyPin: widget.onVerifyPin,
+        onPinLockRemaining: widget.onPinLockRemaining,
         onRemovePin: widget.onRemovePin,
         onEnableBiometrics: widget.onEnableBiometrics,
         onSetBiometricsEnabled: widget.onSetBiometricsEnabled,
+        lockDelay: widget.lockDelay,
+        onLockDelayChanged: widget.onLockDelayChanged,
         onExportData: _exportData,
         onShareTransactions: _shareTransactions,
         onImportData: _importData,
@@ -2010,7 +2206,8 @@ class _CoinlyHomeState extends State<CoinlyHome> {
     };
   }
 
-  String _transactionType(MoneyTransaction transaction) => switch (transaction.kind) {
+  String _transactionType(MoneyTransaction transaction) =>
+      switch (transaction.kind) {
         TransactionKind.income => 'Доход',
         TransactionKind.expense => 'Расход',
         TransactionKind.transfer => 'Перевод',
@@ -2059,7 +2256,8 @@ class _CoinlyHomeState extends State<CoinlyHome> {
       ].join('\n');
 
   String _transactionsAsMarkdown(List<MoneyTransaction> transactions) {
-    String escape(String value) => value.replaceAll('|', '\\|').replaceAll('\n', ' ');
+    String escape(String value) =>
+        value.replaceAll('|', '\\|').replaceAll('\n', ' ');
     final rows = transactions.map((transaction) =>
         '| ${_transactionDate(transaction)} | ${_transactionType(transaction)} | ${escape(transaction.title)} | ${transaction.amount.toStringAsFixed(2)} $_currency | ${escape(transaction.account ?? '')} | ${escape(transaction.subtitle)} |');
     return [
@@ -2264,9 +2462,12 @@ class SettingsPage extends StatefulWidget {
     required this.biometricsEnabled,
     required this.onSetPin,
     required this.onVerifyPin,
+    required this.onPinLockRemaining,
     required this.onRemovePin,
     required this.onEnableBiometrics,
     required this.onSetBiometricsEnabled,
+    required this.lockDelay,
+    required this.onLockDelayChanged,
     required this.onExportData,
     required this.onShareTransactions,
     required this.onImportData,
@@ -2281,9 +2482,12 @@ class SettingsPage extends StatefulWidget {
   final bool biometricsEnabled;
   final Future<void> Function(String pin) onSetPin;
   final Future<bool> Function(String pin) onVerifyPin;
+  final Future<Duration?> Function() onPinLockRemaining;
   final Future<void> Function() onRemovePin;
   final Future<bool> Function() onEnableBiometrics;
   final Future<void> Function(bool enabled) onSetBiometricsEnabled;
+  final Duration lockDelay;
+  final Future<void> Function(Duration delay) onLockDelayChanged;
   final Future<void> Function() onExportData;
   final Future<void> Function() onShareTransactions;
   final Future<void> Function() onImportData;
@@ -2305,6 +2509,7 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _handlingBackup = false;
   late String _currency;
   late AppLanguage _language;
+  late Duration _lockDelay;
 
   @override
   void initState() {
@@ -2313,6 +2518,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _biometricsEnabled = widget.biometricsEnabled;
     _currency = widget.currency;
     _language = widget.language;
+    _lockDelay = widget.lockDelay;
     if (_hasPin) {
       _checkBiometrics();
     } else {
@@ -2342,6 +2548,7 @@ class _SettingsPageState extends State<SettingsPage> {
         builder: (_) => PinChangePage(
           hasExistingPin: _hasPin,
           onVerifyOldPin: widget.onVerifyPin,
+          onLockRemaining: widget.onPinLockRemaining,
           onSavePin: widget.onSetPin,
         ),
       ),
@@ -2357,6 +2564,7 @@ class _SettingsPageState extends State<SettingsPage> {
       AppPageRoute(
         builder: (_) => PinRemovalPage(
           onVerifyPin: widget.onVerifyPin,
+          onLockRemaining: widget.onPinLockRemaining,
           onRemovePin: widget.onRemovePin,
         ),
       ),
@@ -2440,6 +2648,30 @@ class _SettingsPageState extends State<SettingsPage> {
     await widget.onLanguageChanged(selected);
   }
 
+  Future<void> _selectLockDelay() async {
+    final selected = await showDialog<Duration>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('Блокировать после выхода'),
+        children: _lockDelayOptions
+            .map(
+              (delay) => SimpleDialogOption(
+                onPressed: () => Navigator.pop(context, delay),
+                child: Row(children: [
+                  Expanded(child: Text(_lockDelayLabel(delay))),
+                  if (delay == _lockDelay)
+                    const Icon(Icons.check_rounded, color: _amber),
+                ]),
+              ),
+            )
+            .toList(),
+      ),
+    );
+    if (selected == null || selected == _lockDelay) return;
+    await widget.onLockDelayChanged(selected);
+    if (mounted) setState(() => _lockDelay = selected);
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
         body: SafeArea(
@@ -2496,48 +2728,48 @@ class _SettingsPageState extends State<SettingsPage> {
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 14, vertical: 8),
                             child: Row(children: [
-                          Container(
-                            width: 42,
-                            height: 42,
-                            decoration: BoxDecoration(
-                              color: (_hasPin ? _mint : _muted)
-                                  .withValues(alpha: .14),
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                            child: Icon(Icons.fingerprint_rounded,
-                                color: _hasPin ? _mint : _muted),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text('Вход по биометрии',
-                                    style:
-                                        TextStyle(fontWeight: FontWeight.w800)),
-                                const SizedBox(height: 3),
-                                Text(
-                                  !_hasPin
-                                      ? 'Установите PIN-код, чтобы включить'
-                                      : _checkingBiometrics
-                                      ? 'Проверяем доступность…'
-                                      : _biometricsAvailable
-                                          ? 'Использует способ, настроенный на устройстве'
-                                          : 'Не настроена на этом устройстве',
-                                  style: const TextStyle(
-                                      color: _muted, fontSize: 12),
+                              Container(
+                                width: 42,
+                                height: 42,
+                                decoration: BoxDecoration(
+                                  color: (_hasPin ? _mint : _muted)
+                                      .withValues(alpha: .14),
+                                  borderRadius: BorderRadius.circular(14),
                                 ),
-                              ],
-                            ),
-                          ),
-                          Switch.adaptive(
-                            value: _hasPin && _biometricsEnabled,
-                            activeThumbColor: _mint,
-                            onChanged: _hasPin && !_checkingBiometrics
-                                ? _toggleBiometrics
-                                : null,
-                          ),
-                        ]),
+                                child: Icon(Icons.fingerprint_rounded,
+                                    color: _hasPin ? _mint : _muted),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text('Вход по биометрии',
+                                        style: TextStyle(
+                                            fontWeight: FontWeight.w800)),
+                                    const SizedBox(height: 3),
+                                    Text(
+                                      !_hasPin
+                                          ? 'Установите PIN-код, чтобы включить'
+                                          : _checkingBiometrics
+                                              ? 'Проверяем доступность…'
+                                              : _biometricsAvailable
+                                                  ? 'Использует способ, настроенный на устройстве'
+                                                  : 'Не настроена на этом устройстве',
+                                      style: const TextStyle(
+                                          color: _muted, fontSize: 12),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Switch.adaptive(
+                                value: _hasPin && _biometricsEnabled,
+                                activeThumbColor: _mint,
+                                onChanged: _hasPin && !_checkingBiometrics
+                                    ? _toggleBiometrics
+                                    : null,
+                              ),
+                            ]),
                           ),
                         ),
                       ),
@@ -2547,6 +2779,14 @@ class _SettingsPageState extends State<SettingsPage> {
                           'Если биометрия недоступна, для входа используется PIN.',
                           style: TextStyle(
                               color: _muted, fontSize: 12, height: 1.45),
+                        ),
+                        const SizedBox(height: 10),
+                        _SettingsRow(
+                          icon: Icons.timer_outlined,
+                          color: const Color(0xFFC7A7FF),
+                          title: 'Блокировать после выхода',
+                          subtitle: _lockDelayLabel(_lockDelay),
+                          onTap: _selectLockDelay,
                         ),
                       ],
                       const SizedBox(height: 28),
@@ -2681,23 +2921,79 @@ class _SettingsRow extends StatelessWidget {
       );
 }
 
+String _pinLockMessage(Duration remaining) {
+  final seconds = remaining.inSeconds + 1;
+  return _appLanguage == AppLanguage.english
+      ? 'Too many attempts. Try again in $seconds sec.'
+      : 'Слишком много попыток. Повторите через $seconds сек.';
+}
+
+mixin _PinLockTimer<T extends StatefulWidget> on State<T> {
+  Timer? _pinLockTimer;
+  Duration? _lockedFor;
+  bool _refreshingPinLock = false;
+
+  Future<Duration?> readPinLockRemaining();
+  void onPinLockStateChanged(Duration? remaining);
+
+  bool get pinInputLocked => _lockedFor != null;
+  String? get pinLockMessage =>
+      _lockedFor == null ? null : _pinLockMessage(_lockedFor!);
+
+  void initializePinLockTimer() {
+    unawaited(refreshPinLock());
+  }
+
+  Future<void> refreshPinLock() async {
+    if (_refreshingPinLock) return;
+    _refreshingPinLock = true;
+    Duration? remaining;
+    try {
+      remaining = await readPinLockRemaining();
+    } finally {
+      _refreshingPinLock = false;
+    }
+    if (!mounted) return;
+
+    final wasLocked = _lockedFor != null;
+    if (remaining == null) {
+      _pinLockTimer?.cancel();
+      _pinLockTimer = null;
+    } else {
+      _pinLockTimer ??= Timer.periodic(
+        const Duration(seconds: 1),
+        (_) => unawaited(refreshPinLock()),
+      );
+    }
+    if (!wasLocked && remaining != null) onPinLockStateChanged(remaining);
+    setState(() => _lockedFor = remaining);
+  }
+
+  void disposePinLockTimer() {
+    _pinLockTimer?.cancel();
+  }
+}
+
 class PinChangePage extends StatefulWidget {
   const PinChangePage({
     super.key,
     required this.hasExistingPin,
     required this.onVerifyOldPin,
+    required this.onLockRemaining,
     required this.onSavePin,
   });
 
   final bool hasExistingPin;
   final Future<bool> Function(String pin) onVerifyOldPin;
+  final Future<Duration?> Function() onLockRemaining;
   final Future<void> Function(String pin) onSavePin;
 
   @override
   State<PinChangePage> createState() => _PinChangePageState();
 }
 
-class _PinChangePageState extends State<PinChangePage> {
+class _PinChangePageState extends State<PinChangePage>
+    with _PinLockTimer<PinChangePage> {
   final _controller = TextEditingController();
   late int _step;
   String? _newPin;
@@ -2708,16 +3004,29 @@ class _PinChangePageState extends State<PinChangePage> {
   void initState() {
     super.initState();
     _step = widget.hasExistingPin ? 0 : 1;
+    if (widget.hasExistingPin) initializePinLockTimer();
   }
 
   @override
   void dispose() {
+    disposePinLockTimer();
     _controller.dispose();
     super.dispose();
   }
 
+  @override
+  Future<Duration?> readPinLockRemaining() => widget.onLockRemaining();
+
+  @override
+  void onPinLockStateChanged(Duration? remaining) {
+    if (remaining != null) {
+      _controller.clear();
+      FocusScope.of(context).unfocus();
+    }
+  }
+
   Future<void> _submit() async {
-    if (_working) return;
+    if (_working || (_step == 0 && pinInputLocked)) return;
     final pin = _controller.text.trim();
     if (!RegExp(r'^\d{4}$').hasMatch(pin)) {
       setState(() => _error = 'PIN должен содержать 4 цифры');
@@ -2731,9 +3040,11 @@ class _PinChangePageState extends State<PinChangePage> {
       final valid = await widget.onVerifyOldPin(pin);
       if (!mounted) return;
       if (!valid) {
+        await refreshPinLock();
+        if (!mounted) return;
         setState(() {
           _working = false;
-          _error = 'Старый PIN введён неверно';
+          _error = pinInputLocked ? null : 'Старый PIN введён неверно';
           _controller.clear();
         });
         return;
@@ -2823,14 +3134,16 @@ class _PinChangePageState extends State<PinChangePage> {
                     if (_error != null) setState(() => _error = null);
                     if (pin.length == 4) _submit();
                   },
-                  errorText: _error,
-                  enabled: !_working,
+                  errorText: _step == 0 ? pinLockMessage ?? _error : _error,
+                  enabled: !_working && !(_step == 0 && pinInputLocked),
                 ),
                 const SizedBox(height: 16),
                 SizedBox(
                   width: double.infinity,
                   child: FilledButton(
-                    onPressed: _working ? null : _submit,
+                    onPressed: _working || (_step == 0 && pinInputLocked)
+                        ? null
+                        : _submit,
                     child: Text(_working ? 'Сохраняем…' : 'Продолжить'),
                   ),
                 ),
@@ -2847,29 +3160,50 @@ class PinRemovalPage extends StatefulWidget {
   const PinRemovalPage({
     super.key,
     required this.onVerifyPin,
+    required this.onLockRemaining,
     required this.onRemovePin,
   });
 
   final Future<bool> Function(String pin) onVerifyPin;
+  final Future<Duration?> Function() onLockRemaining;
   final Future<void> Function() onRemovePin;
 
   @override
   State<PinRemovalPage> createState() => _PinRemovalPageState();
 }
 
-class _PinRemovalPageState extends State<PinRemovalPage> {
+class _PinRemovalPageState extends State<PinRemovalPage>
+    with _PinLockTimer<PinRemovalPage> {
   final _controller = TextEditingController();
   String? _error;
   bool _working = false;
 
   @override
+  void initState() {
+    super.initState();
+    initializePinLockTimer();
+  }
+
+  @override
   void dispose() {
+    disposePinLockTimer();
     _controller.dispose();
     super.dispose();
   }
 
+  @override
+  Future<Duration?> readPinLockRemaining() => widget.onLockRemaining();
+
+  @override
+  void onPinLockStateChanged(Duration? remaining) {
+    if (remaining != null) {
+      _controller.clear();
+      FocusScope.of(context).unfocus();
+    }
+  }
+
   Future<void> _submit() async {
-    if (_working) return;
+    if (_working || pinInputLocked) return;
     final pin = _controller.text.trim();
     if (!RegExp(r'^\d{4}$').hasMatch(pin)) {
       setState(() => _error = 'Введите текущий PIN из 4 цифр');
@@ -2882,9 +3216,11 @@ class _PinRemovalPageState extends State<PinRemovalPage> {
     final valid = await widget.onVerifyPin(pin);
     if (!mounted) return;
     if (!valid) {
+      await refreshPinLock();
+      if (!mounted) return;
       setState(() {
         _working = false;
-        _error = 'PIN-код введён неверно';
+        _error = pinInputLocked ? null : 'PIN-код введён неверно';
         _controller.clear();
       });
       return;
@@ -2938,8 +3274,8 @@ class _PinRemovalPageState extends State<PinRemovalPage> {
                       if (_error != null) setState(() => _error = null);
                       if (pin.length == 4) _submit();
                     },
-                    errorText: _error,
-                    enabled: !_working,
+                    errorText: pinLockMessage ?? _error,
+                    enabled: !_working && !pinInputLocked,
                   ),
                   if (_working) ...[
                     const SizedBox(height: 20),
@@ -3218,14 +3554,14 @@ class _InterfaceTourOverlay extends StatelessWidget {
     final content = _content;
     final needsTab = step == 3;
     return GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: needsTab || !ready ? null : onAdvance,
-        child: LayoutBuilder(
-          builder: (context, outerConstraints) => CustomPaint(
-            painter: _TourSpotlightPainter(
-              target: _targetRect(outerConstraints.biggest),
-            ),
-            child: SafeArea(
+      behavior: HitTestBehavior.opaque,
+      onTap: needsTab || !ready ? null : onAdvance,
+      child: LayoutBuilder(
+        builder: (context, outerConstraints) => CustomPaint(
+          painter: _TourSpotlightPainter(
+            target: _targetRect(outerConstraints.biggest),
+          ),
+          child: SafeArea(
             bottom: false,
             child: LayoutBuilder(
               builder: (context, constraints) => Stack(
@@ -3631,35 +3967,33 @@ class _BalanceCardState extends State<BalanceCard> {
           SizedBox(
             width: double.infinity,
             child: AnimatedSwitcher(
-            duration: _quickMotion,
-            switchInCurve: _motionCurve,
-            // The stage stays full-width and left-aligned for both values, so
-            // the narrower dots do not move while the balance fades out.
-            layoutBuilder: (currentChild, previousChildren) => Stack(
-              alignment: Alignment.centerLeft,
-              children: [
-                ...previousChildren,
-                if (currentChild != null) currentChild,
-              ],
-            ),
-            transitionBuilder: (child, animation) =>
-                FadeTransition(opacity: animation, child: child),
-            child: FittedBox(
-              alignment: Alignment.centerLeft,
-              fit: BoxFit.scaleDown,
-              child: Text(
-                visible
-                    ? '${_money(widget.balance)} $_displayCurrency'
-                    : '•••••• $_displayCurrency',
-                key: ValueKey(visible),
-                style: const TextStyle(
-                  fontSize: 33,
-                  height: 1.02,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: -1.35,
+              duration: _quickMotion,
+              switchInCurve: _motionCurve,
+              // The stage stays full-width and left-aligned for both values, so
+              // the narrower dots do not move while the balance fades out.
+              layoutBuilder: (currentChild, previousChildren) => Stack(
+                alignment: Alignment.centerLeft,
+                children: [
+                  ...previousChildren,
+                  if (currentChild != null) currentChild,
+                ],
+              ),
+              transitionBuilder: (child, animation) =>
+                  FadeTransition(opacity: animation, child: child),
+              child: FittedBox(
+                alignment: Alignment.centerLeft,
+                fit: BoxFit.scaleDown,
+                child: MoneyText(
+                  visible ? _money(widget.balance) : '••••••',
+                  key: ValueKey(visible),
+                  style: const TextStyle(
+                    fontSize: 33,
+                    height: 1.02,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: -1.35,
+                  ),
                 ),
               ),
-            ),
             ),
           ),
           const SizedBox(height: 22),
@@ -4018,7 +4352,8 @@ class _AccountsOverviewState extends State<AccountsOverview> {
         if (index.isOdd) return const SizedBox(width: gap);
         return SizedBox(
           width: cardWidth,
-          child: _AccountOverviewCard(account: widget.accounts[start + index ~/ 2]),
+          child: _AccountOverviewCard(
+              account: widget.accounts[start + index ~/ 2]),
         );
       }),
     );
@@ -4032,8 +4367,7 @@ class _AccountsOverviewState extends State<AccountsOverview> {
       return LayoutBuilder(
         builder: (context, constraints) => SizedBox(
           height: 116,
-          child: _accountRow(
-              constraints.maxWidth, 0, widget.accounts.length),
+          child: _accountRow(constraints.maxWidth, 0, widget.accounts.length),
         ),
       );
     }
@@ -4060,17 +4394,19 @@ class _AccountsOverviewState extends State<AccountsOverview> {
             label: 'Страница счетов ${_pageIndex + 1} из $pageCount',
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
-              children: List.generate(pageCount, (index) => AnimatedContainer(
-                    duration: _quickMotion,
-                    curve: _motionCurve,
-                    width: index == _pageIndex ? 16 : 5,
-                    height: 5,
-                    margin: const EdgeInsets.symmetric(horizontal: 3),
-                    decoration: BoxDecoration(
-                      color: index == _pageIndex ? _amber : _muted,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                  )),
+              children: List.generate(
+                  pageCount,
+                  (index) => AnimatedContainer(
+                        duration: _quickMotion,
+                        curve: _motionCurve,
+                        width: index == _pageIndex ? 16 : 5,
+                        height: 5,
+                        margin: const EdgeInsets.symmetric(horizontal: 3),
+                        decoration: BoxDecoration(
+                          color: index == _pageIndex ? _amber : _muted,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      )),
             ),
           ),
         ]),
@@ -4105,9 +4441,9 @@ class _AccountOverviewCard extends StatelessWidget {
             child: FittedBox(
               alignment: Alignment.centerLeft,
               fit: BoxFit.scaleDown,
-              child: Text('${_money(account.balance)} $_displayCurrency',
-                  style:
-                      const TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+              child: MoneyText(_money(account.balance),
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w800, fontSize: 14)),
             ),
           ),
         ]),
@@ -4142,8 +4478,8 @@ class MiniStat extends StatelessWidget {
             const SizedBox(height: 16),
             Text(label, style: const TextStyle(color: _muted, fontSize: 12)),
             const SizedBox(height: 3),
-            Text(
-              '$value $_displayCurrency',
+            MoneyText(
+              value,
               style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
             ),
           ],
@@ -4411,8 +4747,8 @@ class PlannedCard extends StatelessWidget {
                 ],
               ),
             ),
-            Text(
-              '19,90\n$_displayCurrency',
+            MoneyText(
+              '19,90',
               textAlign: TextAlign.right,
               style: TextStyle(fontWeight: FontWeight.w800),
             ),
@@ -4563,8 +4899,8 @@ class _Total extends StatelessWidget {
         children: [
           Text(text, style: const TextStyle(fontSize: 12, color: _muted)),
           const SizedBox(height: 3),
-          Text(
-            '$amount $_displayCurrency',
+          MoneyText(
+            amount,
             style: TextStyle(color: color, fontWeight: FontWeight.w800),
           ),
         ],
@@ -4600,10 +4936,10 @@ class TransactionTile extends StatelessWidget {
                   Text(item.subtitle,
                       style: const TextStyle(color: _muted, fontSize: 12))
                 ])),
-            Text(
+            MoneyText(
                 item.kind == TransactionKind.transfer
-                    ? '${_money(item.amount)}\n$_displayCurrency'
-                    : '${item.amount > 0 ? '+' : '−'}${_money(item.amount.abs())}\n$_displayCurrency',
+                    ? _money(item.amount)
+                    : '${item.amount > 0 ? '+' : '−'}${_money(item.amount.abs())}',
                 textAlign: TextAlign.right,
                 style: TextStyle(
                     fontWeight: FontWeight.w800,
@@ -4727,7 +5063,7 @@ class AccountCard extends StatelessWidget {
                 Text(account.type,
                     style: const TextStyle(color: _muted, fontSize: 12))
               ])),
-          Text('${_money(account.balance)}\n$_displayCurrency',
+          MoneyText(_money(account.balance),
               textAlign: TextAlign.right,
               style: const TextStyle(fontWeight: FontWeight.w800)),
         ]),
@@ -4765,7 +5101,8 @@ class CardDetailsTile extends StatelessWidget {
                 Text(card.title,
                     style: const TextStyle(fontWeight: FontWeight.w800)),
                 const SizedBox(height: 3),
-                Text('${card.bank} · ${_currencySymbol(card.currency)} · •••• ${card.lastFour}',
+                Text(
+                    '${card.bank} · ${_currencySymbol(card.currency)} · •••• ${card.lastFour}',
                     style: const TextStyle(color: _muted, fontSize: 12),
                     overflow: TextOverflow.ellipsis),
               ])),
@@ -5013,8 +5350,7 @@ class _CardDetailsFormSheetState extends State<CardDetailsFormSheet> {
                   SizedBox(
                       width: double.infinity,
                       child: FilledButton(
-                          onPressed: _save,
-                          child: const Text('Сохранить'))),
+                          onPressed: _save, child: const Text('Сохранить'))),
                 ])),
           ),
         ),
@@ -5506,7 +5842,8 @@ class _MonthlyFlowChartState extends State<MonthlyFlowChart> {
   Widget build(BuildContext context) {
     final highest = widget.data.fold<double>(1,
         (value, item) => math.max(value, math.max(item.income, item.expense)));
-    final selected = _selectedIndex == null ? null : widget.data[_selectedIndex!];
+    final selected =
+        _selectedIndex == null ? null : widget.data[_selectedIndex!];
     return Semantics(
       label: _tr('Доходы и расходы за последние шесть месяцев'),
       child: SizedBox(
@@ -5576,8 +5913,8 @@ class _MonthlyFlowChartState extends State<MonthlyFlowChart> {
                             '${_monthTitle(item.month)}. Доходы ${_money(item.income)} $_displayCurrency, расходы ${_money(item.expense)} $_displayCurrency',
                         child: InkWell(
                           borderRadius: BorderRadius.circular(8),
-                          onTap: () => setState(() => _selectedIndex =
-                              isSelected ? null : index),
+                          onTap: () => setState(
+                              () => _selectedIndex = isSelected ? null : index),
                           child: AnimatedContainer(
                             duration: _quickMotion,
                             decoration: BoxDecoration(
@@ -5616,8 +5953,7 @@ class _MonthlyFlowChartState extends State<MonthlyFlowChart> {
                                 const SizedBox(height: 7),
                                 Text(_monthShort(item.month),
                                     style: TextStyle(
-                                        color:
-                                            isSelected ? _amber : _muted,
+                                        color: isSelected ? _amber : _muted,
                                         fontSize: 10,
                                         fontWeight: FontWeight.w700)),
                               ],
@@ -5865,22 +6201,23 @@ class _MonthSelector extends StatelessWidget {
           onTap: () => _openMonthPicker(context),
           borderRadius: BorderRadius.circular(12),
           child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-        decoration: BoxDecoration(
-          color: _surface,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              _monthName(selectedMonth),
-              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            decoration: BoxDecoration(
+              color: _surface,
+              borderRadius: BorderRadius.circular(12),
             ),
-            const Icon(Icons.keyboard_arrow_down_rounded, size: 18),
-          ],
-        ),
-      ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  _monthName(selectedMonth),
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w600, fontSize: 12),
+                ),
+                const Icon(Icons.keyboard_arrow_down_rounded, size: 18),
+              ],
+            ),
+          ),
         ),
       );
 }
@@ -6028,17 +6365,24 @@ class ExpenseDonut extends StatelessWidget {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(
-                      _money(selected?.amount ?? total),
-                      style: const TextStyle(
-                          fontWeight: FontWeight.w800, fontSize: 15),
+                    SizedBox(
+                      width: 88,
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: MoneyText(
+                          _money(selected?.amount ?? total),
+                          style: const TextStyle(
+                              fontWeight: FontWeight.w800, fontSize: 15),
+                        ),
+                      ),
                     ),
-                    Text(
-                      selected?.name ?? _displayCurrency,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 10, color: _muted),
-                    ),
+                    if (selected != null)
+                      Text(
+                        selected.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 10, color: _muted),
+                      ),
                   ],
                 ),
               ),
@@ -6853,7 +7197,8 @@ class _EditAccountSheetState extends State<EditAccountSheet> {
                 inputFormatters: [_moneyInputFormatter],
                 textInputAction: TextInputAction.done,
                 decoration: InputDecoration(
-                    labelText: _tr('Баланс'), suffixText: _displayCurrency)),
+                    labelText: _tr('Баланс'),
+                    suffixIcon: const _CurrencyInputSuffix())),
             const SizedBox(height: 22),
             SizedBox(
                 width: double.infinity,
@@ -6966,7 +7311,7 @@ class _AddAccountSheetState extends State<AddAccountSheet> {
                 inputFormatters: [_moneyInputFormatter],
                 decoration: InputDecoration(
                     labelText: _tr('Текущий баланс'),
-                    suffixText: _displayCurrency)),
+                    suffixIcon: const _CurrencyInputSuffix())),
             const SizedBox(height: 22),
             SizedBox(
                 width: double.infinity,
@@ -7133,7 +7478,7 @@ class _SavingsGoalSheetState extends State<SavingsGoalSheet> {
                   inputFormatters: [_moneyInputFormatter],
                   decoration: InputDecoration(
                     labelText: _tr('Сумма цели'),
-                    suffixText: _displayCurrency,
+                    suffixIcon: const _CurrencyInputSuffix(),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -7147,7 +7492,7 @@ class _SavingsGoalSheetState extends State<SavingsGoalSheet> {
                   decoration: InputDecoration(
                     labelText: _tr('Уже накоплено'),
                     hintText: '0',
-                    suffixText: _displayCurrency,
+                    suffixIcon: const _CurrencyInputSuffix(),
                   ),
                 ),
                 const SizedBox(height: 22),
@@ -7266,7 +7611,7 @@ class _NavBar extends StatelessWidget {
                         width: current ? 42 : 34,
                         height: 29,
                         alignment: Alignment.center,
-                          decoration: BoxDecoration(
+                        decoration: BoxDecoration(
                           color: current
                               ? _amber.withValues(alpha: .16)
                               : highlighted
@@ -7516,9 +7861,11 @@ class AppStorage {
   static const _financialClearMarkerKey = 'coinly_financial_clear_pending_v1';
   static const _onboardingCompletedKey = 'coinly_onboarding_completed_v1';
   static const _interfaceTourKey = 'coinly_interface_tour_in_progress_v1';
+  static const _pinCredentialKey = 'coinly_pin_credential_v3';
   static const _pinHashKey = 'coinly_pin_hash_v1';
   static const _pinSaltKey = 'coinly_pin_salt_v1';
   static const _biometricsKey = 'coinly_biometrics_enabled_v1';
+  static const _lockDelaySecondsKey = 'coinly_lock_delay_seconds_v1';
   static const _failedPinAttemptsKey = 'coinly_failed_pin_attempts_v1';
   static const _pinLockUntilKey = 'coinly_pin_lock_until_v1';
   static const _fourDigitPinMigrationKey =
@@ -7681,7 +8028,13 @@ class AppStorage {
 
   Future<bool> hasPin() async {
     try {
-      return (await _secure.read(key: _pinHashKey)) != null;
+      final values = await Future.wait([
+        _secure.read(key: _pinCredentialKey),
+        _secure.read(key: _pinHashKey),
+      ]);
+      // A damaged secure record must not silently disable the app lock.
+      // Verification will reject it, which is safer than exposing data.
+      return values[0] != null || values[1] != null;
     } catch (_) {
       return false;
     }
@@ -7700,6 +8053,26 @@ class AppStorage {
         value: enabled.toString(),
       );
 
+  Future<Duration> lockDelay() async {
+    try {
+      final seconds = int.tryParse(
+        await _secure.read(key: _lockDelaySecondsKey) ?? '',
+      );
+      if (seconds == null ||
+          !_lockDelayOptions.any((delay) => delay.inSeconds == seconds)) {
+        return _defaultLockDelay;
+      }
+      return Duration(seconds: seconds);
+    } catch (_) {
+      return _defaultLockDelay;
+    }
+  }
+
+  Future<void> setLockDelay(Duration delay) => _secure.write(
+        key: _lockDelaySecondsKey,
+        value: delay.inSeconds.toString(),
+      );
+
   Future<void> setPin(String pin) async {
     if (!RegExp(r'^\d{4}$').hasMatch(pin)) {
       throw ArgumentError.value(pin, 'pin', 'PIN must contain 4 digits');
@@ -7708,6 +8081,7 @@ class AppStorage {
   }
 
   Future<void> clearPin() async {
+    await _secure.delete(key: _pinCredentialKey);
     await _secure.delete(key: _pinHashKey);
     await _secure.delete(key: _pinSaltKey);
     await _secure.delete(key: _biometricsKey);
@@ -7731,20 +8105,34 @@ class AppStorage {
     final random = math.Random.secure();
     final salt =
         base64UrlEncode(List<int>.generate(32, (_) => random.nextInt(256)));
-    await _secure.write(key: _pinSaltKey, value: salt);
-    await _secure.write(
-        key: _pinHashKey, value: 'v2:${await _derivePinHash(salt, pin)}');
+    final hash = await _derivePinHash(salt, pin);
+    await _writePinCredential(salt, 'v2:$hash');
     await _clearFailedPinAttempts();
+  }
+
+  // A PIN verifier must be replaced atomically. Keeping its salt and hash
+  // together prevents a failed PIN change from disabling the old app lock.
+  Future<void> _writePinCredential(String salt, String hash) async {
+    await _secure.write(
+      key: _pinCredentialKey,
+      value: jsonEncode({'version': 2, 'salt': salt, 'hash': hash}),
+    );
   }
 
   Future<bool> verifyPin(String pin) async {
     try {
-      final lockUntil =
-          int.tryParse(await _secure.read(key: _pinLockUntilKey) ?? '0') ?? 0;
+      final stored = await Future.wait([
+        _secure.read(key: _pinLockUntilKey),
+        _secure.read(key: _pinCredentialKey),
+        _secure.read(key: _pinHashKey),
+        _secure.read(key: _pinSaltKey),
+      ]);
+      final lockUntil = int.tryParse(stored[0] ?? '0') ?? 0;
       if (DateTime.now().millisecondsSinceEpoch < lockUntil) return false;
       if (lockUntil > 0) await _clearFailedPinAttempts();
-      final hash = await _secure.read(key: _pinHashKey);
-      final salt = await _secure.read(key: _pinSaltKey);
+      final credential = _decodePinCredential(stored[1]);
+      final hash = credential?['hash'] ?? stored[2];
+      final salt = credential?['salt'] ?? stored[3];
       if (hash == null || salt == null) return false;
 
       final valid = hash.startsWith('v2:')
@@ -7756,9 +8144,13 @@ class AppStorage {
         return false;
       }
 
-      // A successful unlock is the only safe time to transparently migrate
-      // a legacy SHA-256 verifier.
-      if (!hash.startsWith('v2:')) {
+      // A successful unlock is the only safe time to migrate a legacy
+      // verifier. Existing v2 credentials can be migrated without running
+      // the intentionally expensive PBKDF2 calculation a second time.
+      if (credential == null && hash.startsWith('v2:')) {
+        await _writePinCredential(salt, hash);
+        await _clearFailedPinAttempts();
+      } else if (!hash.startsWith('v2:')) {
         await _storePin(pin);
       } else {
         await _clearFailedPinAttempts();
@@ -7804,8 +8196,29 @@ class AppStorage {
   }
 
   Future<void> _clearFailedPinAttempts() async {
-    await _secure.delete(key: _failedPinAttemptsKey);
-    await _secure.delete(key: _pinLockUntilKey);
+    await Future.wait([
+      _secure.delete(key: _failedPinAttemptsKey),
+      _secure.delete(key: _pinLockUntilKey),
+    ]);
+  }
+
+  Map<String, String>? _decodePinCredential(String? encoded) {
+    if (encoded == null) return null;
+    try {
+      final value = jsonDecode(encoded);
+      if (value is! Map || value['version'] != 2) return null;
+      final salt = value['salt'];
+      final hash = value['hash'];
+      if (salt is! String ||
+          salt.isEmpty ||
+          hash is! String ||
+          !hash.startsWith('v2:')) {
+        return null;
+      }
+      return {'salt': salt, 'hash': hash};
+    } catch (_) {
+      return null;
+    }
   }
 
   String _legacyPinHash(String salt, String pin) =>
@@ -8140,7 +8553,7 @@ class PinGate extends StatefulWidget {
   State<PinGate> createState() => _PinGateState();
 }
 
-class _PinGateState extends State<PinGate> {
+class _PinGateState extends State<PinGate> with _PinLockTimer<PinGate> {
   final _controller = TextEditingController();
   String? _firstPin;
   String? _error;
@@ -8150,6 +8563,7 @@ class _PinGateState extends State<PinGate> {
   @override
   void initState() {
     super.initState();
+    if (widget.hasPin) initializePinLockTimer();
     if (widget.biometricsEnabled) {
       WidgetsBinding.instance
           .addPostFrameCallback((_) => _authenticateBiometrics());
@@ -8158,12 +8572,24 @@ class _PinGateState extends State<PinGate> {
 
   @override
   void dispose() {
+    disposePinLockTimer();
     _controller.dispose();
     super.dispose();
   }
 
+  @override
+  Future<Duration?> readPinLockRemaining() => widget.onLockRemaining();
+
+  @override
+  void onPinLockStateChanged(Duration? remaining) {
+    if (remaining != null) {
+      _controller.clear();
+      FocusScope.of(context).unfocus();
+    }
+  }
+
   Future<void> _submit() async {
-    if (_working) return;
+    if (_working || (widget.hasPin && pinInputLocked)) return;
     final pin = _controller.text.trim();
     if (!RegExp(r'^\d{4}$').hasMatch(pin)) {
       setState(() => _error = 'Введите PIN из 4 цифр');
@@ -8184,13 +8610,11 @@ class _PinGateState extends State<PinGate> {
     if (widget.hasPin) {
       final valid = await widget.onUnlock(pin);
       if (mounted && !valid) {
-        final lockedFor = await widget.onLockRemaining();
+        await refreshPinLock();
         if (!mounted) return;
         setState(() {
           _working = false;
-          _error = lockedFor == null
-              ? 'Неверный PIN'
-              : 'Слишком много попыток. Повторите через ${lockedFor.inSeconds + 1} сек.';
+          _error = pinInputLocked ? null : 'Неверный PIN';
           _controller.clear();
         });
       }
@@ -8267,8 +8691,8 @@ class _PinGateState extends State<PinGate> {
                     if (_error != null) setState(() => _error = null);
                     if (pin.length == 4) _submit();
                   },
-                  errorText: _error,
-                  enabled: !_working,
+                  errorText: pinLockMessage ?? _error,
+                  enabled: !_working && !(widget.hasPin && pinInputLocked),
                 ),
                 if (_working) ...[
                   const SizedBox(height: 20),
