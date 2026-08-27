@@ -194,6 +194,18 @@ class _CurrencyInputSuffix extends StatelessWidget {
       );
 }
 
+/// Shows the currency mark inside a text field without relying on the field's
+/// text style. This is required for the Belarusian-ruble glyph from `nbrb`.
+class _CurrencyInputPrefix extends StatelessWidget {
+  const _CurrencyInputPrefix();
+
+  @override
+  Widget build(BuildContext context) => const Padding(
+        padding: EdgeInsets.only(left: 4, right: 6),
+        child: _CurrencyMark(color: _muted, fontSize: 22),
+      );
+}
+
 AppLanguage _appLanguage = AppLanguage.russian;
 final _appLanguageNotifier = ValueNotifier<AppLanguage>(_appLanguage);
 
@@ -1577,10 +1589,64 @@ class _CoinlyHomeState extends State<CoinlyHome> {
     return nextSave;
   }
 
+  Future<void> _showCreateFirstAccountPrompt() async {
+    final shouldOpenAccounts = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => Dialog(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 360),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 26, 24, 18),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircleAvatar(
+                  radius: 25,
+                  backgroundColor: _amber.withValues(alpha: .18),
+                  child: const Icon(
+                    Icons.account_balance_wallet_outlined,
+                    color: _amber,
+                    size: 27,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'Сначала создайте счёт',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Он нужен, чтобы учитывать доходы, расходы и переводы.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: _muted, height: 1.35),
+                ),
+                const SizedBox(height: 22),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: () => Navigator.pop(dialogContext, true),
+                    icon: const Icon(Icons.add_rounded),
+                    label: const Text('Создать счёт'),
+                  ),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext, false),
+                  child: const Text('Позже'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (shouldOpenAccounts == true && mounted) _changeTab(2);
+  }
+
   Future<void> _addTransaction(
       [TransactionKind initial = TransactionKind.expense]) async {
     if (_accounts.isEmpty) {
-      _showNotice(context, 'Сначала добавьте счёт');
+      await _showCreateFirstAccountPrompt();
       return;
     }
     final result = await showModalBottomSheet<TransactionEditorResult>(
@@ -6806,7 +6872,9 @@ class _AddTransactionSheetState extends State<AddTransactionSheet> {
                   style: const TextStyle(
                       fontSize: 28, fontWeight: FontWeight.w800),
                   decoration: InputDecoration(
-                    prefixText: '$_displayCurrency  ',
+                    prefixIcon: const _CurrencyInputPrefix(),
+                    prefixIconConstraints:
+                        const BoxConstraints(minWidth: 30, minHeight: 0),
                     hintText: '0,00',
                     border: UnderlineInputBorder(),
                   ),
@@ -8844,16 +8912,22 @@ String _operationDateLabel(DateTime date) {
       : '${date.day} ${names[date.month - 1]}';
 }
 
-void _showNotice(BuildContext context, String text) {
+void _showNotice(
+  BuildContext context,
+  String text, {
+  String? actionLabel,
+  VoidCallback? onAction,
+}) {
   final media = MediaQuery.of(context);
-  const noticeHeight = 56.0;
-  final topInset = media.padding.top + 12;
-  final bottomMargin =
-      math.max(0.0, media.size.height - topInset - noticeHeight).toDouble();
+  // Keep notices above the bottom navigation rather than under the status bar.
+  final bottomMargin = media.padding.bottom + 94;
   ScaffoldMessenger.of(context)
     ..hideCurrentSnackBar()
     ..showSnackBar(SnackBar(
       content: Text(text),
+      action: actionLabel == null || onAction == null
+          ? null
+          : SnackBarAction(label: actionLabel, onPressed: onAction),
       behavior: SnackBarBehavior.floating,
       margin: EdgeInsets.fromLTRB(16, 0, 16, bottomMargin),
     ));
