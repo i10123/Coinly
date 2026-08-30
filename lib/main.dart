@@ -4999,8 +4999,21 @@ class TransactionTile extends StatelessWidget {
                   Text(item.title,
                       style: const TextStyle(fontWeight: FontWeight.w700)),
                   const SizedBox(height: 4),
-                  Text(item.subtitle,
-                      style: const TextStyle(color: _muted, fontSize: 12))
+                  if (item.kind == TransactionKind.transfer) ...[
+                    Text(
+                      _transferRoute(item),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: _muted, fontSize: 12),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      _operationDateLabel(_dateOf(item)),
+                      style: const TextStyle(color: _muted, fontSize: 11),
+                    ),
+                  ] else
+                    Text(_transactionSubtitle(item),
+                        style: const TextStyle(color: _muted, fontSize: 12))
                 ])),
             MoneyText(
                 item.kind == TransactionKind.transfer
@@ -8877,6 +8890,14 @@ String _operationDateLabel(DateTime date) {
       date.day == yesterday.day) {
     return _appLanguage == AppLanguage.english ? 'Yesterday' : 'Вчера';
   }
+  final dayBeforeYesterday = today.subtract(const Duration(days: 2));
+  if (date.year == dayBeforeYesterday.year &&
+      date.month == dayBeforeYesterday.month &&
+      date.day == dayBeforeYesterday.day) {
+    return _appLanguage == AppLanguage.english
+        ? 'Day before yesterday'
+        : 'Позавчера';
+  }
   const russianNames = [
     'янв.',
     'фев.',
@@ -8907,9 +8928,31 @@ String _operationDateLabel(DateTime date) {
   ];
   final names =
       _appLanguage == AppLanguage.english ? englishNames : russianNames;
-  return _appLanguage == AppLanguage.english
-      ? '${names[date.month - 1]} ${date.day}'
-      : '${date.day} ${names[date.month - 1]}';
+  final isCurrentYear = date.year == today.year;
+  if (_appLanguage == AppLanguage.english) {
+    return '${names[date.month - 1]} ${date.day}'
+        '${isCurrentYear ? '' : ', ${date.year}'}';
+  }
+  return '${date.day} ${names[date.month - 1]}'
+      '${isCurrentYear ? '' : ' ${date.year}'}';
+}
+
+String _transactionSubtitle(MoneyTransaction item) {
+  final date = _operationDateLabel(_dateOf(item));
+  final account = item.account;
+  if (account != null && account.isNotEmpty) return '$account · $date';
+
+  // Old backups may not contain an account name. Preserve their text while
+  // replacing the previously saved relative date with the actual operation date.
+  final legacyPrefix = item.subtitle.split(' · ').first.trim();
+  return legacyPrefix.isEmpty ? date : '$legacyPrefix · $date';
+}
+
+String _transferRoute(MoneyTransaction item) {
+  final source = item.fromAccount;
+  final destination = item.account;
+  if (source != null && destination != null) return '$source → $destination';
+  return item.subtitle.split(' · ').first.trim();
 }
 
 void _showNotice(
